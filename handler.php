@@ -107,10 +107,30 @@ function handleListElementAdd(
 ): void {
     $elementId = extractElementId($request);
 
+    /*
+     * Если Bitrix24 прислал element_id=0 или вообще
+     * не прислал ID, пытаемся определить последний элемент.
+     */
     if ($elementId <= 0) {
-        throw new RuntimeException(
-            'LIST_ELEMENT_ADD event does not contain element ID'
+        logInfo('Element ID is zero or missing, finding last list element', [
+            'list_id' => $listId,
+        ]);
+
+        $elementId = getLastListElementId(
+            $webhook,
+            $listId
         );
+
+        if ($elementId <= 0) {
+            throw new RuntimeException(
+                'Could not determine last list element ID'
+            );
+        }
+
+        logInfo('Last list element selected', [
+            'list_id' => $listId,
+            'element_id' => $elementId,
+        ]);
     }
 
     $responsibleId = $configuredResponsibleId;
@@ -193,6 +213,69 @@ function handleListElementAdd(
         'task1_id' => $task1Id,
         'task2_id' => $task2Id,
     ]);
+}
+
+/*
+ * ============================================================
+ * FIND LAST LIST ELEMENT
+ * ============================================================
+ */
+
+function getLastListElementId(
+    string $webhook,
+    int $listId
+): int {
+    /*
+     * Получаем элементы списка.
+     *
+     * Сортируем по ID по убыванию и берём первый.
+     *
+     * В зависимости от версии REST API Bitrix24
+     * ответ может содержать элементы непосредственно
+     * в result либо внутри result.items.
+     */
+    $result = bitrixRequest(
+        $webhook,
+        'lists.element.get',
+        [
+            'IBLOCK_TYPE_ID' => LIST_TYPE_ID,
+            'IBLOCK_ID' => $listId,
+        ]
+    );
+
+    $items = $result['result'] ?? [];
+
+    if (
+        is_array($items) &&
+        isset($items['items']) &&
+        is_array($items['items'])
+    ) {
+        $items = $items['items'];
+    }
+
+    if (!is_array($items) || $items === []) {
+        logError('No list elements returned while finding last element', [
+            'list_id' => $listId,
+        ]);
+
+        return 0;
+    }
+
+    $maxId = 0;
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $id = (int)($item['ID'] ?? 0);
+
+        if ($id > $maxId) {
+            $maxId = $id;
+        }
+    }
+
+    return $maxId;
 }
 
 /*
@@ -1433,6 +1516,10 @@ function extractElementId(
         }
     }
 
+    /*
+     * Если ID отсутствует или равен 0,
+     * вызывающая функция определит последний элемент.
+     */
     return 0;
 }
 
