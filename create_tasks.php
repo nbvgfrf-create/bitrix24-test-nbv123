@@ -61,10 +61,7 @@ $elementResponse = $bx->request(
 
 $logger->saveFile($elementResponse, 'create_tasks_element.log');
 
-if (
-    !isset($elementResponse['result']) ||
-    empty($elementResponse['result'])
-) {
+if (empty($elementResponse)) {
     response([
         'success' => false,
         'error' => 'Элемент списка не найден',
@@ -73,7 +70,7 @@ if (
     ], 404);
 }
 
-$element = $elementResponse['result'];
+$element = $elementResponse[0];
 
 $elementName = $element['NAME'] ?? 'Без названия';
 
