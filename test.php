@@ -75,16 +75,25 @@ $tests = [
     ],
 
     'disk' => [
-    'method' => 'disk.storage.getlist',
-],
-
-'fields' => [
-    'method' => 'lists.field.get',
-    'params' => [
-        'IBLOCK_TYPE_ID' => 'lists',
-        'IBLOCK_ID' => 28,
+        'method' => 'disk.storage.getlist',
     ],
-],
+
+    'fields' => [
+        'method' => 'lists.field.get',
+        'params' => [
+            'IBLOCK_TYPE_ID' => 'lists',
+            'IBLOCK_ID' => 28,
+        ],
+    ],
+
+    'element' => [
+        'method' => 'lists.element.get',
+        'params' => [
+            'IBLOCK_TYPE_ID' => 'lists',
+            'IBLOCK_ID' => 28,
+            'ELEMENT_ID' => 1,
+        ],
+    ],
 ];
 
 $result = [];
