@@ -91,6 +91,7 @@ $tests = [
         'params' => [
             'IBLOCK_TYPE_ID' => 'lists',
             'IBLOCK_ID' => 28,
+            'ELEMENT_ID' => 2,
         ],
     ],
 ];
