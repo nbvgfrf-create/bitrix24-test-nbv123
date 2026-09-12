@@ -5,14 +5,12 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 
 use BX\BXConnector;
-use BX\Logger;
 
 require_once __DIR__ . '/BXConnector.php';
-require_once __DIR__ . '/Logger.php';
 
 $config = require __DIR__ . '/config.php';
 
-if (!$config['bitrix_webhook']) {
+if (empty($config['bitrix_webhook'])) {
     http_response_code(500);
 
     echo json_encode([
@@ -23,13 +21,11 @@ if (!$config['bitrix_webhook']) {
     exit;
 }
 
-$logger = new Logger('bitrix24-handler');
-
 $bx = new BXConnector($config['bitrix_webhook']);
 
 
 /**
- * Отправка JSON-ответа.
+ * Ответ JSON.
  */
 function response(array $data, int $status = 200): never
 {
@@ -47,7 +43,10 @@ function response(array $data, int $status = 200): never
 /**
  * Получение входящих данных.
  *
- * Поддерживает как JSON, так и обычный POST.
+ * Поддерживаем:
+ * - JSON POST
+ * - обычный POST
+ * - GET
  */
 function getRequestData(): array
 {
@@ -61,24 +60,101 @@ function getRequestData(): array
         }
     }
 
-    return $_POST;
+    if (!empty($_POST)) {
+        return $_POST;
+    }
+
+    return $_GET;
+}
+
+
+/**
+ * Лог в Render.
+ */
+function logMessage(string $message, array $data = []): void
+{
+    error_log(
+        '[bitrix24-handler] ' .
+        $message .
+        ($data
+            ? ' ' . json_encode($data, JSON_UNESCAPED_UNICODE)
+            : '')
+    );
+}
+
+
+/**
+ * Получение ID элемента списка из запроса БП.
+ */
+function getElementIdFromRequest(array $data): int
+{
+    /*
+     * Наш собственный параметр.
+     */
+    if (!empty($data['element_id'])) {
+        return (int)$data['element_id'];
+    }
+
+    /*
+     * Возможные варианты написания.
+     */
+    if (!empty($data['ELEMENT_ID'])) {
+        return (int)$data['ELEMENT_ID'];
+    }
+
+    /*
+     * DOCUMENT_ID может прийти как:
+     *
+     * ["lists", "BizprocDocument", "123"]
+     */
+    if (isset($data['document_id'])) {
+        $documentId = $data['document_id'];
+
+        if (is_array($documentId) && !empty($documentId)) {
+            $last = end($documentId);
+
+            if (is_numeric($last)) {
+                return (int)$last;
+            }
+        }
+
+        if (is_numeric($documentId)) {
+            return (int)$documentId;
+        }
+    }
+
+    if (isset($data['DOCUMENT_ID'])) {
+        $documentId = $data['DOCUMENT_ID'];
+
+        if (is_array($documentId) && !empty($documentId)) {
+            $last = end($documentId);
+
+            if (is_numeric($last)) {
+                return (int)$last;
+            }
+        }
+
+        if (is_numeric($documentId)) {
+            return (int)$documentId;
+        }
+    }
+
+    return 0;
 }
 
 
 /**
  * Получение ID задачи из события ONTASKUPDATE.
  */
-function getTaskIdFromEvent(array $data): ?int
+function getTaskIdFromEvent(array $data): int
 {
     $id =
         $data['data']['FIELDS_AFTER']['ID']
         ?? $data['data']['FIELDS_AFTER']['id']
         ?? $data['data']['ID']
-        ?? null;
-
-    if ($id === null) {
-        return null;
-    }
+        ?? $data['task_id']
+        ?? $data['TASK_ID']
+        ?? 0;
 
     return (int)$id;
 }
@@ -136,11 +212,9 @@ function getTask(
         ]
     );
 
-    if (!isset($result['task'])) {
-        return null;
-    }
-
-    return $result['task'];
+    return isset($result['task'])
+        ? $result['task']
+        : null;
 }
 
 
@@ -161,7 +235,7 @@ function getListElement(
         ]
     );
 
-    if (empty($result)) {
+    if (!is_array($result) || empty($result)) {
         return null;
     }
 
@@ -170,19 +244,21 @@ function getListElement(
 
 
 /**
- * Получение полей универсального списка.
+ * Получение всех полей списка.
  */
 function getListFields(
     BXConnector $bx,
     int $listId
 ): array {
-    return $bx->request(
+    $result = $bx->request(
         'lists.field.get',
         [
             'IBLOCK_TYPE_ID' => 'lists',
             'IBLOCK_ID' => $listId,
         ]
     );
+
+    return is_array($result) ? $result : [];
 }
 
 
@@ -191,15 +267,27 @@ function getListFields(
  */
 function normalizeValue(mixed $value): string
 {
+    if ($value === null) {
+        return '';
+    }
+
+    if (is_scalar($value)) {
+        return (string)$value;
+    }
+
     if (is_array($value)) {
         $values = [];
 
         foreach ($value as $item) {
             if (is_array($item)) {
-                $values[] = implode(
-                    ': ',
-                    array_map('strval', $item)
-                );
+                $parts = [];
+
+                foreach ($item as $key => $itemValue) {
+                    $parts[] =
+                        $key . ': ' . (string)$itemValue;
+                }
+
+                $values[] = implode(', ', $parts);
             } else {
                 $values[] = (string)$item;
             }
@@ -208,28 +296,25 @@ function normalizeValue(mixed $value): string
         return implode(', ', $values);
     }
 
-    if ($value === null) {
-        return '';
-    }
-
-    return (string)$value;
+    return '';
 }
 
 
 /**
- * Формирование HTML-таблицы
- * с кодами полей и значениями.
+ * Формирование таблицы:
+ * Код поля | Значение.
  */
 function buildTable(
     array $element,
     array $fields
 ): string {
-    $html = '<table border="1" cellpadding="6" cellspacing="0">';
-
-    $html .= '<tr>';
-    $html .= '<th>Код поля</th>';
-    $html .= '<th>Значение</th>';
-    $html .= '</tr>';
+    $html = '
+<table border="1" cellpadding="6" cellspacing="0">
+    <tr>
+        <th>Код поля</th>
+        <th>Значение</th>
+    </tr>
+';
 
     foreach ($fields as $fieldId => $field) {
 
@@ -237,15 +322,40 @@ function buildTable(
             continue;
         }
 
-        $code = $field['CODE'];
+        $code = (string)$field['CODE'];
 
         $value = $element[$fieldId] ?? '';
+
+        /*
+         * Иногда поле приходит по ID,
+         * иногда по PROPERTY_ID.
+         */
+        if ($value === '' && isset($element['PROPERTY_' . $fieldId])) {
+            $value = $element['PROPERTY_' . $fieldId];
+        }
 
         $value = normalizeValue($value);
 
         $html .= '<tr>';
-        $html .= '<td>' . htmlspecialchars($code) . '</td>';
-        $html .= '<td>' . htmlspecialchars($value) . '</td>';
+
+        $html .= '<td>' .
+            htmlspecialchars(
+                $code,
+                ENT_QUOTES | ENT_SUBSTITUTE,
+                'UTF-8'
+            ) .
+            '</td>';
+
+        $html .= '<td>' .
+            nl2br(
+                htmlspecialchars(
+                    $value,
+                    ENT_QUOTES | ENT_SUBSTITUTE,
+                    'UTF-8'
+                )
+            ) .
+            '</td>';
+
         $html .= '</tr>';
     }
 
@@ -256,10 +366,14 @@ function buildTable(
 
 
 /**
- * Получение ID файлов из элемента списка.
+ * Получение файлов из элемента.
  *
- * Пока только собираем ID.
- * Прикрепление к задаче сделаем следующим этапом.
+ * Сейчас собираем ID файлов типа "Файл (Диск)".
+ *
+ * Для обычного поля "Файл" Bitrix24 хранит
+ * обычный ID файла, а не ID файла Диска.
+ * Его отдельно преобразуем после проверки
+ * фактического типа поля.
  */
 function extractFileIds(
     array $element,
@@ -273,21 +387,50 @@ function extractFileIds(
             continue;
         }
 
-        if (($field['TYPE'] ?? '') !== 'F') {
+        $type = $field['TYPE'] ?? '';
+
+        if ($type !== 'F') {
             continue;
         }
 
-        if (!isset($element[$fieldId])) {
+        $value = $element[$fieldId]
+            ?? $element['PROPERTY_' . $fieldId]
+            ?? null;
+
+        if ($value === null || $value === '') {
             continue;
         }
 
-        $values = $element[$fieldId];
-
-        if (!is_array($values)) {
-            continue;
-        }
+        $values = is_array($value)
+            ? $value
+            : [$value];
 
         foreach ($values as $fileId) {
+
+            /*
+             * Если значение пришло как массив,
+             * пытаемся достать ID.
+             */
+            if (is_array($fileId)) {
+
+                foreach ([
+                    'ID',
+                    'id',
+                    'VALUE',
+                    'value',
+                ] as $key) {
+
+                    if (
+                        isset($fileId[$key]) &&
+                        is_numeric($fileId[$key])
+                    ) {
+                        $files[] = (int)$fileId[$key];
+                        break;
+                    }
+                }
+
+                continue;
+            }
 
             if (is_numeric($fileId)) {
                 $files[] = (int)$fileId;
@@ -299,14 +442,69 @@ function extractFileIds(
 }
 
 
+/**
+ * Прикрепление файла Диска к задаче.
+ */
+function attachFileToTask(
+    BXConnector $bx,
+    int $taskId,
+    int $fileId
+): array {
+    return $bx->request(
+        'tasks.task.files.attach',
+        [
+            'taskId' => $taskId,
+            'fileId' => $fileId,
+        ]
+    );
+}
+
+
+/**
+ * Проверяем, существует ли уже итоговая задача.
+ */
+function finalTaskExists(
+    BXConnector $bx,
+    string $title
+): bool {
+    $result = $bx->request(
+        'tasks.task.list',
+        [
+            'filter' => [
+                'TITLE' => $title,
+            ],
+            'select' => [
+                'ID',
+                'TITLE',
+                'STATUS',
+            ],
+        ]
+    );
+
+    return !empty($result['tasks']);
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Получаем входящий запрос
+|--------------------------------------------------------------------------
+*/
+
 $data = getRequestData();
 
-$event = $data['event'] ?? $data['EVENT'] ?? '';
+$event =
+    $data['event']
+    ?? $data['EVENT']
+    ?? '';
 
-$logger->write([
-    'event' => $event,
-    'request' => $data,
-]);
+logMessage(
+    'Получен запрос',
+    [
+        'event' => $event,
+        'data' => $data,
+    ]
+);
 
 
 /*
@@ -314,27 +512,28 @@ $logger->write([
 | 1. СОЗДАНИЕ ЭЛЕМЕНТА СПИСКА
 |--------------------------------------------------------------------------
 |
-| Бизнес-процесс Bitrix24 должен отправить:
+| Из БП мы отправим:
 |
 | event=LIST_ELEMENT_ADD
-| element_id=123
+| element_id={=Document:ID}
 |
 */
 
 if ($event === 'LIST_ELEMENT_ADD') {
 
-    $elementId = (int)($data['element_id'] ?? 0);
+    $elementId = getElementIdFromRequest($data);
 
     if (!$elementId) {
         response([
             'success' => false,
-            'error' => 'element_id is required',
+            'error' => 'Не удалось определить ID элемента списка',
+            'request' => $data,
         ], 400);
     }
 
 
     /*
-     * Получаем созданный элемент.
+     * Получаем элемент.
      */
 
     $element = getListElement(
@@ -346,103 +545,112 @@ if ($event === 'LIST_ELEMENT_ADD') {
     if (!$element) {
         response([
             'success' => false,
-            'error' => 'List element not found',
+            'error' => 'Элемент списка не найден',
             'element_id' => $elementId,
         ], 404);
     }
 
 
-    $title = $element['NAME']
-        ?? "Элемент списка #{$elementId}";
+    $elementName =
+        (string)($element['NAME'] ?? "Элемент #{$elementId}");
 
 
     /*
-     * Первая задача.
+     * Названия задач.
+     */
+
+    $task1Title =
+        "[LIST {$config['list_id']}:{$elementId}] Задача 1";
+
+    $task2Title =
+        "[LIST {$config['list_id']}:{$elementId}] Задача 2";
+
+
+    /*
+     * Создаём первую задачу.
      */
 
     $description1 = <<<HTML
-<p>
-Задача создана автоматически.
-</p>
+<p>Задача создана автоматически.</p>
 
 <p>
 <b>Универсальный список:</b> {$config['list_id']}<br>
 <b>Элемент:</b> {$elementId}<br>
-<b>Название:</b> {$title}
+<b>Название:</b> {$elementName}
 </p>
 
 <p>
-PAIR_ELEMENT_ID={$elementId}
+PAIR_ELEMENT_ID={$elementId}<br>
 PAIR_TASK=1
-</p>
-HTML;
-
-
-    /*
-     * Вторая задача.
-     */
-
-    $description2 = <<<HTML
-<p>
-Задача создана автоматически.
-</p>
-
-<p>
-<b>Универсальный список:</b> {$config['list_id']}<br>
-<b>Элемент:</b> {$elementId}<br>
-<b>Название:</b> {$title}
-</p>
-
-<p>
-PAIR_ELEMENT_ID={$elementId}
-PAIR_TASK=2
 </p>
 HTML;
 
 
     $task1 = createTask(
         $bx,
-        "[LIST {$config['list_id']}:{$elementId}] Задача 1",
+        $task1Title,
         $description1,
         $config['responsible_id']
     );
 
 
+    /*
+     * Создаём вторую задачу.
+     *
+     * Сразу записываем ID первой задачи.
+     */
+
+    $description2 = <<<HTML
+<p>Задача создана автоматически.</p>
+
+<p>
+<b>Универсальный список:</b> {$config['list_id']}<br>
+<b>Элемент:</b> {$elementId}<br>
+<b>Название:</b> {$elementName}
+</p>
+
+<p>
+PAIR_ELEMENT_ID={$elementId}<br>
+PAIR_TASK=2<br>
+PAIR_TASK_ID={$task1}
+</p>
+HTML;
+
+
     $task2 = createTask(
         $bx,
-        "[LIST {$config['list_id']}:{$elementId}] Задача 2",
+        $task2Title,
         $description2,
         $config['responsible_id']
     );
 
 
     /*
-     * Записываем ID второй задачи в первую
-     * и ID первой во вторую.
+     * Теперь записываем ID второй задачи
+     * в первую.
      */
 
-    $bx->request(
+    $description1 .=
+        "<p>PAIR_TASK_ID={$task2}</p>";
+
+    $updateResult = $bx->request(
         'tasks.task.update',
         [
             'taskId' => $task1,
             'fields' => [
-                'DESCRIPTION' =>
-                    $description1 .
-                    "<p>PAIR_TASK_ID={$task2}</p>",
+                'DESCRIPTION' => $description1,
             ],
         ]
     );
 
 
-    $bx->request(
-        'tasks.task.update',
+    logMessage(
+        'Созданы две задачи',
         [
-            'taskId' => $task2,
-            'fields' => [
-                'DESCRIPTION' =>
-                    $description2 .
-                    "<p>PAIR_TASK_ID={$task1}</p>",
-            ],
+            'element_id' => $elementId,
+            'task1' => $task1,
+            'task2' => $task2,
+            'update_task1' => $updateResult,
         ]
     );
 
@@ -461,11 +669,12 @@ HTML;
 
 /*
 |--------------------------------------------------------------------------
-| 2. ИЗМЕНЕНИЕ ЗАДАЧИ
+| 2. ОБНОВЛЕНИЕ ЗАДАЧИ
 |--------------------------------------------------------------------------
 |
-| Bitrix24 отправляет событие ONTASKUPDATE.
-|
+| Сюда приходит событие ONTASKUPDATE
+| от исходящего вебхука Bitrix24.
+|--------------------------------------------------------------------------
 */
 
 if ($event === 'ONTASKUPDATE') {
@@ -475,13 +684,14 @@ if ($event === 'ONTASKUPDATE') {
     if (!$taskId) {
         response([
             'success' => false,
-            'error' => 'Task ID not found',
+            'error' => 'ID задачи не найден',
+            'request' => $data,
         ], 400);
     }
 
 
     /*
-     * Получаем задачу.
+     * Получаем актуальное состояние задачи.
      */
 
     $task = getTask(
@@ -492,31 +702,37 @@ if ($event === 'ONTASKUPDATE') {
     if (!$task) {
         response([
             'success' => false,
-            'error' => 'Task not found',
+            'error' => 'Задача не найдена',
             'task_id' => $taskId,
         ], 404);
     }
 
 
     /*
-     * STATUS = 5 означает завершённую задачу.
+     * Нас интересуют только завершённые задачи.
+     *
+     * STATUS = 5 — завершена.
      */
 
     if ((string)($task['status'] ?? '') !== '5') {
+
         response([
             'success' => true,
             'ignored' => true,
-            'reason' => 'Task is not completed',
+            'reason' => 'Задача ещё не завершена',
             'task_id' => $taskId,
+            'status' => $task['status'] ?? null,
         ]);
     }
 
 
-    $description = $task['description'] ?? '';
+    $description =
+        (string)($task['description'] ?? '');
 
 
     /*
-     * Проверяем, что задача создана нашим скриптом.
+     * Проверяем, что это задача,
+     * созданная нашим скриптом.
      */
 
     if (!preg_match(
@@ -524,10 +740,11 @@ if ($event === 'ONTASKUPDATE') {
         $description,
         $elementMatch
     )) {
+
         response([
             'success' => true,
             'ignored' => true,
-            'reason' => 'Not our task',
+            'reason' => 'Это не задача нашего обработчика',
             'task_id' => $taskId,
         ]);
     }
@@ -545,9 +762,10 @@ if ($event === 'ONTASKUPDATE') {
         $description,
         $pairMatch
     )) {
+
         response([
             'success' => false,
-            'error' => 'Second task ID not found',
+            'error' => 'PAIR_TASK_ID не найден',
             'task_id' => $taskId,
         ], 500);
     }
@@ -568,18 +786,19 @@ if ($event === 'ONTASKUPDATE') {
     if (!$pairTask) {
         response([
             'success' => false,
-            'error' => 'Second task not found',
-            'task_id' => $pairTaskId,
+            'error' => 'Вторая задача не найдена',
+            'pair_task_id' => $pairTaskId,
         ], 404);
     }
 
 
     /*
-     * Если вторая ещё не завершена,
-     * просто ждём.
+     * Если вторая задача ещё не завершена,
+     * ничего не создаём.
      */
 
     if ((string)($pairTask['status'] ?? '') !== '5') {
+
         response([
             'success' => true,
             'waiting' => true,
@@ -591,31 +810,23 @@ if ($event === 'ONTASKUPDATE') {
 
 
     /*
-     * Обе задачи завершены.
-     *
-     * Проверяем, не создавали ли третью раньше.
+     * ОБЕ ЗАДАЧИ ЗАВЕРШЕНЫ.
      */
 
-    $resultTitle =
+
+    $finalTaskTitle =
         "[LIST {$config['list_id']}:{$elementId}] Итоговая задача";
 
 
-    $existing = $bx->request(
-        'tasks.task.list',
-        [
-            'filter' => [
-                'TITLE' => $resultTitle,
-            ],
-            'select' => [
-                'ID',
-                'TITLE',
-                'STATUS',
-            ],
-        ]
-    );
+    /*
+     * Защита от повторного создания.
+     */
 
+    if (finalTaskExists(
+        $bx,
+        $finalTaskTitle
+    )) {
 
-    if (!empty($existing['tasks'])) {
         response([
             'success' => true,
             'already_created' => true,
@@ -637,7 +848,7 @@ if ($event === 'ONTASKUPDATE') {
     if (!$element) {
         response([
             'success' => false,
-            'error' => 'List element not found',
+            'error' => 'Элемент списка не найден',
             'element_id' => $elementId,
         ], 404);
     }
@@ -654,7 +865,7 @@ if ($event === 'ONTASKUPDATE') {
 
 
     /*
-     * Формируем таблицу.
+     * Создаём HTML-таблицу.
      */
 
     $table = buildTable(
@@ -664,7 +875,9 @@ if ($event === 'ONTASKUPDATE') {
 
 
     $elementName = htmlspecialchars(
-        (string)($element['NAME'] ?? '')
+        (string)($element['NAME'] ?? ''),
+        ENT_QUOTES | ENT_SUBSTITUTE,
+        'UTF-8'
     );
 
 
@@ -687,7 +900,7 @@ HTML;
 
     $task3 = createTask(
         $bx,
-        $resultTitle,
+        $finalTaskTitle,
         $description,
         $config['responsible_id']
     );
@@ -703,12 +916,50 @@ HTML;
     );
 
 
-    $logger->write([
-        'event' => 'FINAL_TASK_CREATED',
-        'element_id' => $elementId,
-        'task_id' => $task3,
-        'file_ids' => $fileIds,
-    ]);
+    /*
+     * Пытаемся прикрепить найденные файлы.
+     *
+     * Это работает для ID файлов Диска.
+     *
+     * Для обычного поля "Файл" потребуется
+     * отдельный перенос файла на Диск.
+     */
+
+    $attachedFiles = [];
+    $fileErrors = [];
+
+    foreach ($fileIds as $fileId) {
+
+        $attachResult = attachFileToTask(
+            $bx,
+            $task3,
+            $fileId
+        );
+
+        if (
+            isset($attachResult['result'])
+            || isset($attachResult['attachmentId'])
+        ) {
+            $attachedFiles[] = $fileId;
+        } else {
+            $fileErrors[] = [
+                'file_id' => $fileId,
+                'response' => $attachResult,
+            ];
+        }
+    }
+
+
+    logMessage(
+        'Создана итоговая задача',
+        [
+            'element_id' => $elementId,
+            'task_id' => $task3,
+            'file_ids' => $fileIds,
+            'attached_files' => $attachedFiles,
+            'file_errors' => $fileErrors,
+        ]
+    );
 
 
     response([
@@ -717,13 +968,15 @@ HTML;
         'element_id' => $elementId,
         'task_id' => $task3,
         'file_ids' => $fileIds,
+        'attached_files' => $attachedFiles,
+        'file_errors' => $fileErrors,
     ]);
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| Неизвестное или пока неиспользуемое событие
+| Неизвестное событие
 |--------------------------------------------------------------------------
 */
 
