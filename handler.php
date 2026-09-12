@@ -21,11 +21,22 @@ if (empty($config['bitrix_webhook'])) {
     exit;
 }
 
+if (empty($config['responsible_id'])) {
+    http_response_code(500);
+
+    echo json_encode([
+        'success' => false,
+        'error' => 'BITRIX_RESPONSIBLE_ID is not configured',
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+
+    exit;
+}
+
 $bx = new BXConnector($config['bitrix_webhook']);
 
 
 /**
- * Отправка JSON-ответа.
+ * Ответ JSON.
  */
 function response(array $data, int $status = 200): never
 {
@@ -43,8 +54,10 @@ function response(array $data, int $status = 200): never
 /**
  * Логирование в Render.
  */
-function logMessage(string $message, array $data = []): void
-{
+function logMessage(
+    string $message,
+    array $data = []
+): void {
     error_log(
         '[bitrix24-handler] ' .
         $message .
@@ -63,19 +76,17 @@ function logMessage(string $message, array $data = []): void
 /**
  * Получение входящих данных.
  *
- * Bitrix24 может передавать:
- * - JSON в теле запроса;
- * - обычный POST;
- * - параметры в URL.
- *
- * Поэтому объединяем все три варианта.
+ * Поддерживает:
+ * - JSON body
+ * - POST
+ * - GET / query string
  */
 function getRequestData(): array
 {
     $data = [];
 
     /*
-     * JSON body.
+     * JSON.
      */
     $raw = file_get_contents('php://input');
 
@@ -98,11 +109,7 @@ function getRequestData(): array
     }
 
     /*
-     * GET / query string.
-     *
-     * Например:
-     *
-     * ?event=LIST_ELEMENT_ADD&element_id=4
+     * GET.
      */
     if (!empty($_GET)) {
         $data = array_merge(
@@ -118,10 +125,12 @@ function getRequestData(): array
 /**
  * Получение ID элемента списка.
  */
-function getElementIdFromRequest(array $data): int
-{
+function getElementIdFromRequest(
+    array $data
+): int {
+
     /*
-     * Наш параметр из URL БП.
+     * Наш собственный параметр.
      */
     if (!empty($data['element_id'])) {
         return (int)$data['element_id'];
@@ -131,14 +140,14 @@ function getElementIdFromRequest(array $data): int
         return (int)$data['ELEMENT_ID'];
     }
 
+
     /*
-     * Bitrix24 может передавать:
+     * document_id от Bitrix24:
      *
-     * document_id:
      * [
      *     "lists",
      *     "Bitrix\\Lists\\BizprocDocumentLists",
-     *     "4"
+     *     "8"
      * ]
      */
     foreach ([
@@ -173,10 +182,12 @@ function getElementIdFromRequest(array $data): int
 
 
 /**
- * Получение ID задачи из события ONTASKUPDATE.
+ * Получение ID задачи из ONTASKUPDATE.
  */
-function getTaskIdFromEvent(array $data): int
-{
+function getTaskIdFromEvent(
+    array $data
+): int {
+
     $id =
         $data['data']['FIELDS_AFTER']['ID']
         ?? $data['data']['FIELDS_AFTER']['id']
@@ -190,6 +201,22 @@ function getTaskIdFromEvent(array $data): int
 
 
 /**
+ * Извлекаем result из возможного ответа BXConnector.
+ */
+function unwrapResult(mixed $result): mixed
+{
+    if (
+        is_array($result) &&
+        array_key_exists('result', $result)
+    ) {
+        return $result['result'];
+    }
+
+    return $result;
+}
+
+
+/**
  * Создание задачи.
  */
 function createTask(
@@ -198,6 +225,7 @@ function createTask(
     string $description,
     int $responsibleId
 ): int {
+
     $result = $bx->request(
         'tasks.task.add',
         [
@@ -209,17 +237,61 @@ function createTask(
         ]
     );
 
-    if (!isset($result['task']['id'])) {
-        throw new RuntimeException(
-            'Не удалось создать задачу: ' .
-            json_encode(
-                $result,
-                JSON_UNESCAPED_UNICODE
-            )
-        );
+    logMessage(
+        'Ответ tasks.task.add',
+        [
+            'title' => $title,
+            'response' => $result,
+        ]
+    );
+
+
+    /*
+     * Возможный формат:
+     *
+     * [
+     *     'task' => [
+     *         'id' => 123
+     *     ]
+     * ]
+     */
+    if (
+        isset($result['task']['id']) &&
+        is_numeric($result['task']['id'])
+    ) {
+        return (int)$result['task']['id'];
     }
 
-    return (int)$result['task']['id'];
+
+    /*
+     * Возможный формат:
+     *
+     * [
+     *     'result' => [
+     *         'task' => [
+     *             'id' => 123
+     *         ]
+     *     ]
+     * ]
+     */
+    $unwrapped = unwrapResult($result);
+
+    if (
+        is_array($unwrapped) &&
+        isset($unwrapped['task']['id']) &&
+        is_numeric($unwrapped['task']['id'])
+    ) {
+        return (int)$unwrapped['task']['id'];
+    }
+
+
+    throw new RuntimeException(
+        'Не удалось создать задачу: ' .
+        json_encode(
+            $result,
+            JSON_UNESCAPED_UNICODE
+        )
+    );
 }
 
 
@@ -230,6 +302,7 @@ function getTask(
     BXConnector $bx,
     int $taskId
 ): ?array {
+
     $result = $bx->request(
         'tasks.task.get',
         [
@@ -244,22 +317,39 @@ function getTask(
         ]
     );
 
-    if (!isset($result['task'])) {
-        return null;
+
+    if (
+        isset($result['task']) &&
+        is_array($result['task'])
+    ) {
+        return $result['task'];
     }
 
-    return $result['task'];
+
+    $unwrapped = unwrapResult($result);
+
+    if (
+        is_array($unwrapped) &&
+        isset($unwrapped['task']) &&
+        is_array($unwrapped['task'])
+    ) {
+        return $unwrapped['task'];
+    }
+
+
+    return null;
 }
 
 
 /**
- * Получение элемента универсального списка.
+ * Получение элемента списка.
  */
 function getListElement(
     BXConnector $bx,
     int $listId,
     int $elementId
 ): ?array {
+
     $result = $bx->request(
         'lists.element.get',
         [
@@ -269,14 +359,110 @@ function getListElement(
         ]
     );
 
+
+    logMessage(
+        'Ответ lists.element.get',
+        [
+            'list_id' => $listId,
+            'element_id' => $elementId,
+            'response' => $result,
+        ]
+    );
+
+
+    /*
+     * Вариант:
+     *
+     * [
+     *     0 => [...]
+     * ]
+     */
     if (
-        !is_array($result) ||
-        empty($result)
+        is_array($result) &&
+        isset($result[0]) &&
+        is_array($result[0])
     ) {
-        return null;
+        return $result[0];
     }
 
-    return $result[0] ?? null;
+
+    /*
+     * Вариант:
+     *
+     * [
+     *     'result' => [
+     *         0 => [...]
+     *     ]
+     * ]
+     */
+    $unwrapped = unwrapResult($result);
+
+    if (
+        is_array($unwrapped) &&
+        isset($unwrapped[0]) &&
+        is_array($unwrapped[0])
+    ) {
+        return $unwrapped[0];
+    }
+
+
+    /*
+     * На некоторых обёртках результат может
+     * оказаться самим элементом.
+     */
+    if (
+        is_array($unwrapped) &&
+        (
+            isset($unwrapped['ID']) ||
+            isset($unwrapped['id']) ||
+            isset($unwrapped['NAME'])
+        )
+    ) {
+        return $unwrapped;
+    }
+
+
+    return null;
+}
+
+
+/**
+ * Получение элемента с несколькими попытками.
+ *
+ * Это защищает от ситуации, когда БП вызвал
+ * обработчик сразу в момент создания элемента.
+ */
+function getListElementWithRetry(
+    BXConnector $bx,
+    int $listId,
+    int $elementId
+): ?array {
+
+    $attempts = 5;
+    $delayMicroseconds = 700000;
+
+
+    for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+
+        $element = getListElement(
+            $bx,
+            $listId,
+            $elementId
+        );
+
+
+        if ($element !== null) {
+            return $element;
+        }
+
+
+        if ($attempt < $attempts) {
+            usleep($delayMicroseconds);
+        }
+    }
+
+
+    return null;
 }
 
 
@@ -287,6 +473,7 @@ function getListFields(
     BXConnector $bx,
     int $listId
 ): array {
+
     $result = $bx->request(
         'lists.field.get',
         [
@@ -295,8 +482,11 @@ function getListFields(
         ]
     );
 
-    return is_array($result)
-        ? $result
+
+    $unwrapped = unwrapResult($result);
+
+    return is_array($unwrapped)
+        ? $unwrapped
         : [];
 }
 
@@ -304,15 +494,19 @@ function getListFields(
 /**
  * Преобразование значения поля в строку.
  */
-function normalizeValue(mixed $value): string
-{
+function normalizeValue(
+    mixed $value
+): string {
+
     if ($value === null) {
         return '';
     }
 
+
     if (is_scalar($value)) {
         return (string)$value;
     }
+
 
     if (is_array($value)) {
 
@@ -325,31 +519,36 @@ function normalizeValue(mixed $value): string
                 $parts = [];
 
                 foreach ($item as $key => $itemValue) {
+
                     $parts[] =
-                        $key . ': ' . (string)$itemValue;
+                        $key .
+                        ': ' .
+                        (string)$itemValue;
                 }
 
                 $values[] =
                     implode(', ', $parts);
 
             } else {
-                $values[] = (string)$item;
+                $values[] =
+                    (string)$item;
             }
         }
 
-        return implode(', ', $values);
+
+        return implode(
+            ', ',
+            $values
+        );
     }
+
 
     return '';
 }
 
 
 /**
- * Формирование HTML-таблицы.
- *
- * В таблице:
- *
- * Код поля | Значение
+ * Создание HTML-таблицы.
  */
 function buildTable(
     array $element,
@@ -367,30 +566,33 @@ function buildTable(
 
     foreach ($fields as $fieldId => $field) {
 
+        if (!is_array($field)) {
+            continue;
+        }
+
+
         if (!isset($field['CODE'])) {
             continue;
         }
 
-        $code = (string)$field['CODE'];
 
-        /*
-         * Основной вариант.
-         */
-        $value = $element[$fieldId] ?? '';
+        $code =
+            (string)$field['CODE'];
 
 
         /*
-         * Запасной вариант:
+         * Основной формат элемента:
          *
          * PROPERTY_106
          */
-        if (
-            ($value === '' || $value === null) &&
-            isset($element['PROPERTY_' . $fieldId])
-        ) {
-            $value =
-                $element['PROPERTY_' . $fieldId];
-        }
+        $propertyKey =
+            'PROPERTY_' . $fieldId;
+
+
+        $value =
+            $element[$propertyKey]
+            ?? $element[$fieldId]
+            ?? '';
 
 
         $value =
@@ -399,6 +601,7 @@ function buildTable(
 
         $html .= '<tr>';
 
+
         $html .= '<td>' .
             htmlspecialchars(
                 $code,
@@ -406,6 +609,7 @@ function buildTable(
                 'UTF-8'
             ) .
             '</td>';
+
 
         $html .= '<td>' .
             nl2br(
@@ -417,23 +621,23 @@ function buildTable(
             ) .
             '</td>';
 
+
         $html .= '</tr>';
     }
 
 
     $html .= '</table>';
 
+
     return $html;
 }
 
 
 /**
- * Поиск файловых полей.
+ * Получение файловых ID.
  *
- * Пока только определяем их ID.
- *
- * Реальное прикрепление файлов сделаем
- * отдельным этапом через Битрикс24 Диск.
+ * Пока только собираем ID.
+ * Прикрепление будет отдельным этапом.
  */
 function extractFileIds(
     array $element,
@@ -445,22 +649,21 @@ function extractFileIds(
 
     foreach ($fields as $fieldId => $field) {
 
-        if (!isset($field['CODE'])) {
+        if (!is_array($field)) {
             continue;
         }
 
 
-        /*
-         * F = файл.
-         */
-        if (($field['TYPE'] ?? '') !== 'F') {
+        if (
+            ($field['TYPE'] ?? '') !== 'F'
+        ) {
             continue;
         }
 
 
         $value =
-            $element[$fieldId]
-            ?? $element['PROPERTY_' . $fieldId]
+            $element['PROPERTY_' . $fieldId]
+            ?? $element[$fieldId]
             ?? null;
 
 
@@ -502,7 +705,8 @@ function extractFileIds(
 
             } elseif (is_numeric($file)) {
 
-                $files[] = (int)$file;
+                $files[] =
+                    (int)$file;
             }
         }
     }
@@ -515,7 +719,7 @@ function extractFileIds(
 
 
 /**
- * Проверка существования итоговой задачи.
+ * Проверяем наличие итоговой задачи.
  */
 function finalTaskExists(
     BXConnector $bx,
@@ -537,17 +741,62 @@ function finalTaskExists(
     );
 
 
-    return !empty($result['tasks']);
+    $unwrapped =
+        unwrapResult($result);
+
+
+    if (
+        is_array($unwrapped) &&
+        !empty($unwrapped['tasks'])
+    ) {
+        return true;
+    }
+
+
+    if (
+        is_array($result) &&
+        !empty($result['tasks'])
+    ) {
+        return true;
+    }
+
+
+    return false;
+}
+
+
+/**
+ * Прикрепление файла Диска.
+ *
+ * Пока не используется:
+ * для обычного поля "Файл" сначала
+ * потребуется получить/перенести файл
+ * на Диск.
+ */
+function attachFileToTask(
+    BXConnector $bx,
+    int $taskId,
+    int $fileId
+): array {
+
+    return $bx->request(
+        'tasks.task.files.attach',
+        [
+            'taskId' => $taskId,
+            'fileId' => $fileId,
+        ]
+    );
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| Получаем запрос
+| Входящий запрос
 |--------------------------------------------------------------------------
 */
 
-$data = getRequestData();
+$data =
+    getRequestData();
 
 
 $event =
@@ -567,19 +816,20 @@ logMessage(
 
 /*
 |--------------------------------------------------------------------------
-| СОЗДАНИЕ ЭЛЕМЕНТА
+| 1. СОЗДАНИЕ ЭЛЕМЕНТА
 |--------------------------------------------------------------------------
 |
-| БП вызывает:
+| БП:
 |
-| handler.php
 | ?event=LIST_ELEMENT_ADD
 | &element_id={=Document:ID}
 |
 |--------------------------------------------------------------------------
 */
 
-if ($event === 'LIST_ELEMENT_ADD') {
+if (
+    $event === 'LIST_ELEMENT_ADD'
+) {
 
     $elementId =
         getElementIdFromRequest($data);
@@ -590,47 +840,29 @@ if ($event === 'LIST_ELEMENT_ADD') {
         response([
             'success' => false,
             'error' =>
-                'Не удалось определить ID элемента списка',
+                'Не удалось определить ID элемента',
             'request' => $data,
         ], 400);
     }
 
 
     /*
-     * Получаем элемент.
+     * ВАЖНО:
+     *
+     * Здесь мы БОЛЬШЕ НЕ вызываем
+     * lists.element.get.
+     *
+     * Элемент только что создаётся,
+     * поэтому REST может ещё не видеть его.
+     *
+     * Для создания задач нам нужен
+     * только elementId.
      */
 
-    $element = getListElement(
-        $bx,
-        $config['list_id'],
-        $elementId
-    );
-
-
-    if (!$element) {
-
-        response([
-            'success' => false,
-            'error' =>
-                'Элемент универсального списка не найден',
-            'element_id' => $elementId,
-        ], 404);
-    }
-
-
-    $elementName =
-        (string)(
-            $element['NAME']
-            ?? "Элемент #{$elementId}"
-        );
-
-
-    /*
-     * Названия двух задач.
-     */
 
     $task1Title =
         "[LIST {$config['list_id']}:{$elementId}] Задача 1";
+
 
     $task2Title =
         "[LIST {$config['list_id']}:{$elementId}] Задача 2";
@@ -638,9 +870,6 @@ if ($event === 'LIST_ELEMENT_ADD') {
 
     /*
      * Первая задача.
-     *
-     * Она пока содержит только ID элемента
-     * и специальный маркер.
      */
 
     $description1 = <<<HTML
@@ -648,8 +877,7 @@ if ($event === 'LIST_ELEMENT_ADD') {
 
 <p>
 <b>Универсальный список:</b> {$config['list_id']}<br>
-<b>Элемент:</b> {$elementId}<br>
-<b>Название:</b> {$elementName}
+<b>Элемент:</b> {$elementId}
 </p>
 
 <p>
@@ -659,25 +887,29 @@ PAIR_TASK=1
 HTML;
 
 
-    $task1 = createTask(
-        $bx,
-        $task1Title,
-        $description1,
-        $config['responsible_id']
-    );
+    try {
+
+        $task1 =
+            createTask(
+                $bx,
+                $task1Title,
+                $description1,
+                $config['responsible_id']
+            );
 
 
-    /*
-     * Вторая задача сразу знает ID первой.
-     */
+        /*
+         * Вторая задача.
+         *
+         * Сразу знаем ID первой.
+         */
 
-    $description2 = <<<HTML
+        $description2 = <<<HTML
 <p>Задача создана автоматически.</p>
 
 <p>
 <b>Универсальный список:</b> {$config['list_id']}<br>
-<b>Элемент:</b> {$elementId}<br>
-<b>Название:</b> {$elementName}
+<b>Элемент:</b> {$elementId}
 </p>
 
 <p>
@@ -688,70 +920,106 @@ PAIR_TASK_ID={$task1}
 HTML;
 
 
-    $task2 = createTask(
-        $bx,
-        $task2Title,
-        $description2,
-        $config['responsible_id']
-    );
+        $task2 =
+            createTask(
+                $bx,
+                $task2Title,
+                $description2,
+                $config['responsible_id']
+            );
 
 
-    /*
-     * Добавляем ID второй задачи в первую.
-     */
+        /*
+         * Добавляем ID второй задачи
+         * в описание первой.
+         */
 
-    $description1 .=
-        "<p>PAIR_TASK_ID={$task2}</p>";
+        $description1 .=
+            "<p>PAIR_TASK_ID={$task2}</p>";
 
 
-    $updateResult = $bx->request(
-        'tasks.task.update',
-        [
-            'taskId' => $task1,
-            'fields' => [
-                'DESCRIPTION' =>
-                    $description1,
+        $updateResult =
+            $bx->request(
+                'tasks.task.update',
+                [
+                    'taskId' => $task1,
+                    'fields' => [
+                        'DESCRIPTION' =>
+                            $description1,
+                    ],
+                ]
+            );
+
+
+        logMessage(
+            'Созданы две задачи',
+            [
+                'element_id' => $elementId,
+                'task1' => $task1,
+                'task2' => $task2,
+                'update_task1' =>
+                    $updateResult,
+                'responsible_id' =>
+                    $config['responsible_id'],
+            ]
+        );
+
+
+        response([
+            'success' => true,
+            'event' =>
+                'LIST_ELEMENT_ADD',
+            'element_id' =>
+                $elementId,
+            'responsible_id' =>
+                $config['responsible_id'],
+            'tasks' => [
+                'task1' => $task1,
+                'task2' => $task2,
             ],
-        ]
-    );
+        ]);
 
 
-    logMessage(
-        'Созданы первые две задачи',
-        [
-            'element_id' => $elementId,
-            'task1' => $task1,
-            'task2' => $task2,
-            'update_task1' => $updateResult,
-        ]
-    );
+    } catch (Throwable $e) {
+
+        logMessage(
+            'Ошибка создания задач',
+            [
+                'element_id' =>
+                    $elementId,
+                'error' =>
+                    $e->getMessage(),
+            ]
+        );
 
 
-    response([
-        'success' => true,
-        'event' => 'LIST_ELEMENT_ADD',
-        'element_id' => $elementId,
-        'tasks' => [
-            'task1' => $task1,
-            'task2' => $task2,
-        ],
-    ]);
+        response([
+            'success' => false,
+            'event' =>
+                'LIST_ELEMENT_ADD',
+            'element_id' =>
+                $elementId,
+            'error' =>
+                $e->getMessage(),
+            'responsible_id' =>
+                $config['responsible_id'],
+        ], 500);
+    }
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| ИЗМЕНЕНИЕ ЗАДАЧИ
+| 2. ИЗМЕНЕНИЕ ЗАДАЧИ
 |--------------------------------------------------------------------------
 |
-| Сюда приходит:
-|
-| ONTASKUPDATE
-|
+| Сюда приходит ONTASKUPDATE.
 |--------------------------------------------------------------------------
 */
 
-if ($event === 'ONTASKUPDATE') {
+if (
+    $event === 'ONTASKUPDATE'
+) {
 
     $taskId =
         getTaskIdFromEvent($data);
@@ -761,34 +1029,38 @@ if ($event === 'ONTASKUPDATE') {
 
         response([
             'success' => false,
-            'error' => 'ID задачи не найден',
+            'error' =>
+                'ID задачи не найден',
             'request' => $data,
         ], 400);
     }
 
 
     /*
-     * Получаем актуальную задачу.
+     * Получаем задачу.
      */
 
-    $task = getTask(
-        $bx,
-        $taskId
-    );
+    $task =
+        getTask(
+            $bx,
+            $taskId
+        );
 
 
     if (!$task) {
 
         response([
             'success' => false,
-            'error' => 'Задача не найдена',
-            'task_id' => $taskId,
+            'error' =>
+                'Задача не найдена',
+            'task_id' =>
+                $taskId,
         ], 404);
     }
 
 
     /*
-     * Нас интересуют только завершённые задачи.
+     * Нас интересует только завершение.
      *
      * STATUS = 5.
      */
@@ -803,8 +1075,9 @@ if ($event === 'ONTASKUPDATE') {
             'success' => true,
             'ignored' => true,
             'reason' =>
-                'Задача ещё не завершена',
-            'task_id' => $taskId,
+                'Задача не завершена',
+            'task_id' =>
+                $taskId,
             'status' =>
                 $task['status'] ?? null,
         ]);
@@ -818,8 +1091,7 @@ if ($event === 'ONTASKUPDATE') {
 
 
     /*
-     * Проверяем, что это задача,
-     * созданная нашим скриптом.
+     * Проверяем, что задача наша.
      */
 
     if (
@@ -835,7 +1107,8 @@ if ($event === 'ONTASKUPDATE') {
             'ignored' => true,
             'reason' =>
                 'Это не задача нашего обработчика',
-            'task_id' => $taskId,
+            'task_id' =>
+                $taskId,
         ]);
     }
 
@@ -845,7 +1118,7 @@ if ($event === 'ONTASKUPDATE') {
 
 
     /*
-     * Из описания берём ID второй задачи.
+     * Получаем ID второй задачи.
      */
 
     if (
@@ -860,7 +1133,8 @@ if ($event === 'ONTASKUPDATE') {
             'success' => false,
             'error' =>
                 'PAIR_TASK_ID не найден',
-            'task_id' => $taskId,
+            'task_id' =>
+                $taskId,
         ], 500);
     }
 
@@ -873,10 +1147,11 @@ if ($event === 'ONTASKUPDATE') {
      * Получаем вторую задачу.
      */
 
-    $pairTask = getTask(
-        $bx,
-        $pairTaskId
-    );
+    $pairTask =
+        getTask(
+            $bx,
+            $pairTaskId
+        );
 
 
     if (!$pairTask) {
@@ -892,8 +1167,7 @@ if ($event === 'ONTASKUPDATE') {
 
 
     /*
-     * Если вторая задача ещё не завершена,
-     * ждём её.
+     * Вторая задача ещё не завершена.
      */
 
     if (
@@ -905,15 +1179,18 @@ if ($event === 'ONTASKUPDATE') {
         response([
             'success' => true,
             'waiting' => true,
-            'element_id' => $elementId,
-            'completed_task' => $taskId,
-            'waiting_task' => $pairTaskId,
+            'element_id' =>
+                $elementId,
+            'completed_task' =>
+                $taskId,
+            'waiting_task' =>
+                $pairTaskId,
         ]);
     }
 
 
     /*
-     * Обе задачи завершены.
+     * ОБЕ ЗАДАЧИ ЗАВЕРШЕНЫ.
      */
 
     $finalTaskTitle =
@@ -921,7 +1198,7 @@ if ($event === 'ONTASKUPDATE') {
 
 
     /*
-     * Не создаём третью повторно.
+     * Не создаём повторно.
      */
 
     if (
@@ -934,20 +1211,24 @@ if ($event === 'ONTASKUPDATE') {
         response([
             'success' => true,
             'already_created' => true,
-            'element_id' => $elementId,
+            'element_id' =>
+                $elementId,
         ]);
     }
 
 
     /*
-     * Получаем элемент списка.
+     * Теперь элемент уже должен существовать.
+     *
+     * Всё равно используем retry.
      */
 
-    $element = getListElement(
-        $bx,
-        $config['list_id'],
-        $elementId
-    );
+    $element =
+        getListElementWithRetry(
+            $bx,
+            $config['list_id'],
+            $elementId
+        );
 
 
     if (!$element) {
@@ -955,35 +1236,34 @@ if ($event === 'ONTASKUPDATE') {
         response([
             'success' => false,
             'error' =>
-                'Элемент универсального списка не найден',
-            'element_id' => $elementId,
+                'Элемент списка не найден после нескольких попыток',
+            'element_id' =>
+                $elementId,
         ], 404);
     }
 
 
     /*
-     * Получаем поля списка.
+     * Получаем поля.
      */
 
-    $fields = getListFields(
-        $bx,
-        $config['list_id']
-    );
+    $fields =
+        getListFields(
+            $bx,
+            $config['list_id']
+        );
 
 
     /*
      * Формируем таблицу.
      */
 
-    $table = buildTable(
-        $element,
-        $fields
-    );
+    $table =
+        buildTable(
+            $element,
+            $fields
+        );
 
-
-    /*
-     * Имя элемента.
-     */
 
     $elementName =
         htmlspecialchars(
@@ -996,10 +1276,10 @@ if ($event === 'ONTASKUPDATE') {
 
 
     /*
-     * Описание итоговой задачи.
+     * Описание третьей задачи.
      */
 
-    $description = <<<HTML
+    $finalDescription = <<<HTML
 <h3>Данные элемента универсального списка</h3>
 
 <p>
@@ -1012,36 +1292,62 @@ if ($event === 'ONTASKUPDATE') {
 HTML;
 
 
+    try {
+
+        $task3 =
+            createTask(
+                $bx,
+                $finalTaskTitle,
+                $finalDescription,
+                $config['responsible_id']
+            );
+
+
+    } catch (Throwable $e) {
+
+        logMessage(
+            'Ошибка создания итоговой задачи',
+            [
+                'element_id' =>
+                    $elementId,
+                'error' =>
+                    $e->getMessage(),
+            ]
+        );
+
+
+        response([
+            'success' => false,
+            'error' =>
+                $e->getMessage(),
+            'element_id' =>
+                $elementId,
+        ], 500);
+    }
+
+
     /*
-     * Создаём третью задачу.
-     */
-
-    $task3 = createTask(
-        $bx,
-        $finalTaskTitle,
-        $description,
-        $config['responsible_id']
-    );
-
-
-    /*
-     * Пока только определяем файлы.
+     * Получаем ID файлов.
      *
-     * Прикрепление будет отдельным этапом.
+     * Пока не прикрепляем.
      */
 
-    $fileIds = extractFileIds(
-        $element,
-        $fields
-    );
+    $fileIds =
+        extractFileIds(
+            $element,
+            $fields
+        );
 
 
     logMessage(
         'Создана итоговая задача',
         [
-            'element_id' => $elementId,
-            'task_id' => $task3,
-            'file_ids' => $fileIds,
+            'element_id' =>
+                $elementId,
+            'task_id' =>
+                $task3,
+            'file_ids' =>
+                $fileIds,
         ]
     );
 
@@ -1049,12 +1355,14 @@ HTML;
     response([
         'success' => true,
         'final_task_created' => true,
-        'element_id' => $elementId,
-        'task_id' => $task3,
-        'file_ids' => $fileIds,
-        'files_attached' => false,
-        'files_message' =>
-            'Прикрепление файлов будет настроено отдельным этапом',
+        'element_id' =>
+            $elementId,
+        'task_id' =>
+            $task3,
+        'file_ids' =>
+            $fileIds,
+        'files_attached' =>
+            false,
     ]);
 }
 
