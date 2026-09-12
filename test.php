@@ -77,6 +77,14 @@ $tests = [
     'disk' => [
         'method' => 'disk.storage.getlist',
     ],
+    "fields" => $bx->request(
+    'lists.field.get',
+    [
+        'IBLOCK_TYPE_ID' => 'lists',
+        'IBLOCK_ID' => 28,
+    ]
+),
+),
 ];
 
 $result = [];
