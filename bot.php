@@ -13,13 +13,20 @@ header('Content-Type: application/json; charset=utf-8');
 
 /*
  * ============================================================
- * Получаем событие от Bitrix24
+ * Получаем событие Bitrix24
  * ============================================================
  */
 
 $raw = file_get_contents('php://input');
 
-$data = json_decode($raw, true);
+$data = [];
+
+parse_str($raw, $data);
+
+
+/*
+ * Лог входящего запроса
+ */
 
 file_put_contents(
     __DIR__ . '/bot_debug.log',
@@ -32,10 +39,18 @@ file_put_contents(
     FILE_APPEND
 );
 
-if (!is_array($data)) {
+
+/*
+ * Проверяем событие
+ */
+
+$event = $data['event'] ?? '';
+
+if ($event !== 'ONIMBOTV2MESSAGEADD') {
+
     echo json_encode([
-        'status' => 'error',
-        'message' => 'Invalid JSON'
+        'status' => 'ignored',
+        'event' => $event
     ]);
 
     exit;
@@ -44,7 +59,7 @@ if (!is_array($data)) {
 
 /*
  * ============================================================
- * Данные сообщения
+ * Получаем данные сообщения
  * ============================================================
  */
 
@@ -56,11 +71,11 @@ $text = trim((string)($message['text'] ?? ''));
 
 $dialogId = (string)($chat['dialogId'] ?? '');
 
-$botId = (int)($bot['id'] ?? 14);
+$botId = (int)($bot['id'] ?? 0);
 
 
 /*
- * Логируем полученные данные
+ * Логируем основные данные
  */
 
 file_put_contents(
@@ -74,21 +89,25 @@ file_put_contents(
 
 /*
  * ============================================================
- * Проверяем dialogId
+ * Проверяем данные
  * ============================================================
  */
 
-if ($dialogId === '') {
-
-    file_put_contents(
-        __DIR__ . '/bot_debug.log',
-        "ERROR: dialogId not found\n\n",
-        FILE_APPEND
-    );
+if ($botId === 0) {
 
     echo json_encode([
         'status' => 'error',
-        'message' => 'dialogId not found'
+        'message' => 'Bot ID not found'
+    ]);
+
+    exit;
+}
+
+if ($dialogId === '') {
+
+    echo json_encode([
+        'status' => 'error',
+        'message' => 'Dialog ID not found'
     ]);
 
     exit;
@@ -106,7 +125,7 @@ $bx = new BXConnector($config['bitrix_webhook']);
 
 /*
  * ============================================================
- * Функция отправки сообщения
+ * Отправка сообщения
  * ============================================================
  */
 
@@ -134,11 +153,12 @@ function sendMessage(
 
 
     /*
-     * Записываем результат отправки в лог
+     * Логируем ответ Bitrix24
      */
 
     file_put_contents(
         __DIR__ . '/bot_debug.log',
+        "--------------------\n" .
         "SEND MESSAGE:\n" .
         $message . "\n\n" .
         "SEND RESULT:\n" .
@@ -180,7 +200,6 @@ if ($text === '/start') {
  * /gif
  *
  * Пример:
- *
  * /gif кот
  * ============================================================
  */
@@ -249,7 +268,6 @@ if (str_starts_with($text, '/gif')) {
 
     $giphy = json_decode($response, true);
 
-
     $gifUrl = $giphy['data'][0]['images']['original']['url'] ?? '';
 
 
@@ -273,7 +291,7 @@ if (str_starts_with($text, '/gif')) {
 
 
     /*
-     * Отправляем ссылку на GIF
+     * Пока отправляем URL GIF.
      */
 
     sendMessage(
@@ -281,7 +299,6 @@ if (str_starts_with($text, '/gif')) {
         $config,
         $botId,
         $dialogId,
-
         $gifUrl
     );
 
@@ -299,7 +316,6 @@ if (str_starts_with($text, '/gif')) {
  * /multiply
  *
  * Пример:
- *
  * /multiply 5 10
  * ============================================================
  */
@@ -310,10 +326,6 @@ if (str_starts_with($text, '/multiply')) {
 
     $parts = preg_split('/\s+/', $arguments);
 
-
-    /*
-     * Проверяем два числа
-     */
 
     if (
         count($parts) !== 2 ||
@@ -345,11 +357,6 @@ if (str_starts_with($text, '/multiply')) {
 
     $result = $a * $b;
 
-
-    /*
-     * Если результат целый,
-     * убираем .0
-     */
 
     if (floor($result) == $result) {
         $result = (int)$result;
@@ -390,7 +397,7 @@ sendMessage(
     "Доступные команды:\n" .
     "/gif <текст> — найти GIF\n" .
     "/multiply <число> <число> — умножить два числа\n\n" .
-    "Для начала можно написать /start."
+    "Для начала напишите /start."
 );
 
 
