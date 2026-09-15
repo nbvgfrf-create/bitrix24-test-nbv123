@@ -15,95 +15,84 @@ $logger = new Logger('bot');
 
 $raw = file_get_contents('php://input');
 
-$data = json_decode($raw, true);
+$data = $_POST;
 
-$logger->saveFile($data, 'incoming.json');
+if (empty($data) && $raw !== '') {
+    $json = json_decode($raw, true);
+
+    if (is_array($json)) {
+        $data = $json;
+    }
+}
+
+$logger->saveFile($data, 'incoming.log');
 
 if (!is_array($data)) {
     http_response_code(400);
     exit;
 }
 
-/*
- * ============================================================
- * EVENT DATA
- * ============================================================
- */
-
-$event = $data['event'] ?? '';
-
-$eventData = $data['data'] ?? [];
-
-$botData = $eventData['bot'] ?? [];
-
-$chatData = $eventData['chat'] ?? [];
-
-$botId = (int)($botData['id'] ?? 0);
-
-$botToken = (string)($botData['auth'] ?? '');
-
-$dialogId = (string)($chatData['dialogId'] ?? '');
-
-/*
- * Если Bitrix не прислал необходимые данные,
- * пробуем взять их из config.php.
- */
-
-if ($botToken === '') {
-    $botToken = $config['bot_token'];
-}
-
-if ($botId === 0) {
-    $botId = (int)($config['bot_id'] ?? 0);
-}
-
-if ($dialogId === '') {
-    http_response_code(200);
-    exit;
-}
-
-/*
- * ============================================================
- * ONLY MESSAGE EVENTS
- * ============================================================
- */
+$event = (string)($data['event'] ?? '');
 
 if ($event !== 'ONIMBOTV2MESSAGEADD') {
     http_response_code(200);
-    echo json_encode(['status' => 'ignored']);
-    exit;
+    exit('OK');
+}
+
+$botId = (int)($data['data']['bot']['id'] ?? 0);
+
+$message = trim(
+    (string)($data['data']['message']['text'] ?? '')
+);
+
+$dialogId = (string)(
+    $data['data']['chat']['dialogId'] ?? ''
+);
+
+$userId = (string)(
+    $data['data']['user']['id'] ?? ''
+);
+
+if ($botId === 0 || $dialogId === '' || $userId === '') {
+    http_response_code(200);
+    exit('OK');
 }
 
 /*
- * ============================================================
- * MESSAGE
- * ============================================================
+ * ------------------------------------------------------------
+ * STATE
+ * ------------------------------------------------------------
  */
 
-$messageData = $eventData['message'] ?? [];
+$stateFile = __DIR__ . '/state.json';
 
-$message = trim(
-    (string)(
-        $messageData['message']
-        ?? $eventData['message']
-        ?? ''
-    )
-);
+$states = [];
 
-$messageId = (int)($messageData['id'] ?? 0);
+if (file_exists($stateFile)) {
+    $saved = json_decode(
+        file_get_contents($stateFile),
+        true
+    );
+
+    if (is_array($saved)) {
+        $states = $saved;
+    }
+}
+
+$mode = $states[$userId] ?? null;
 
 /*
- * ============================================================
- * CONNECTOR
- * ============================================================
+ * ------------------------------------------------------------
+ * BITRIX CONNECTOR
+ * ------------------------------------------------------------
  */
 
 $bx = new BXConnector($config['bitrix_webhook']);
 
 /*
- * ============================================================
- * SEND FUNCTION
- * ============================================================
+ * ------------------------------------------------------------
+ * SEND MESSAGE
+ * ------------------------------------------------------------
  */
 
 function sendMessage(
@@ -112,62 +101,34 @@ function sendMessage(
     string $botToken,
     string $dialogId,
     string $message,
-    array $extra = []
-): void {
-    $params = [
-        'botId' => $botId,
-        'botToken' => $botToken,
-        'dialogId' => $dialogId,
+    array $fields = []
+): array {
+    $fields['message'] = $message;
 
-        'fields' => array_merge([
-            'message' => $message,
-        ], $extra),
-    ];
-
-    $result = $bx->request(
+    return $bx->request(
         'imbot.v2.Chat.Message.send',
-        $params,
+        [
+            'botId' => $botId,
+            'botToken' => $botToken,
+            'dialogId' => $dialogId,
+            'fields' => $fields,
+        ],
         'full'
-    );
-
-    file_put_contents(
-        __DIR__ . '/bot_response.log',
-        print_r($result, true) . PHP_EOL,
-        FILE_APPEND
     );
 }
 
 /*
- * ============================================================
+ * ------------------------------------------------------------
  * MENU
- * ============================================================
+ * ------------------------------------------------------------
  */
 
-$menuKeyboard = [
-    [
-        'TEXT' => '🎬 GIF',
-        'COMMAND' => 'gif',
-        'BG_COLOR_TOKEN' => 'primary',
-    ],
-    [
-        'TEXT' => '✖️ Умножение',
-        'COMMAND' => 'multiply',
-        'BG_COLOR_TOKEN' => 'primary',
-    ],
-];
-
-/*
- * ============================================================
- * COMMANDS
- * ============================================================
- */
-
-if (
-    $message === '/start'
-    || $message === 'start'
-    || $message === 'меню'
-    || $message === 'Меню'
-) {
+function sendMenu(
+    BXConnector $bx,
+    int $botId,
+    string $botToken,
+    string $dialogId
+): void {
     sendMessage(
         $bx,
         $botId,
@@ -175,106 +136,130 @@ if (
         $dialogId,
         'Выберите действие:',
         [
-            'keyboard' => $menuKeyboard,
+            'keyboard' => [
+                [
+                    [
+                        'TEXT' => '🎬 GIF',
+                        'COMMAND' => 'gif',
+                        'BG_COLOR_TOKEN' => 'primary',
+                    ],
+                    [
+                        'TEXT' => '✖️ Умножение',
+                        'COMMAND' => 'multiply',
+                        'BG_COLOR_TOKEN' => 'primary',
+                    ],
+                ],
+            ],
         ]
     );
-
-    http_response_code(200);
-    exit;
 }
 
 /*
- * ============================================================
+ * ------------------------------------------------------------
+ * COMMAND / MENU
+ * ------------------------------------------------------------
+ */
+
+$messageLower = mb_strtolower($message);
+
+if (
+    $messageLower === '/start' ||
+    $messageLower === 'меню' ||
+    $messageLower === 'start'
+) {
+    $states[$userId] = null;
+
+    file_put_contents(
+        $stateFile,
+        json_encode(
+            $states,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
+        )
+    );
+
+    sendMenu(
+        $bx,
+        $botId,
+        $config['bot_token'],
+        $dialogId
+    );
+
+    http_response_code(200);
+    exit('OK');
+}
+
+/*
+ * ------------------------------------------------------------
  * GIF MODE
- * ============================================================
+ * ------------------------------------------------------------
  */
 
 if (
-    mb_strtolower($message) === 'gif'
-    || mb_strtolower($message) === '🎬 gif'
+    $messageLower === 'gif' ||
+    $messageLower === '🎬 gif'
 ) {
+    $states[$userId] = 'gif';
+
+    file_put_contents(
+        $stateFile,
+        json_encode(
+            $states,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
+        )
+    );
+
     sendMessage(
         $bx,
         $botId,
-        $botToken,
+        $config['bot_token'],
         $dialogId,
         'Напишите, какую GIF найти.'
     );
 
     http_response_code(200);
-    exit;
+    exit('OK');
 }
 
 /*
- * ============================================================
- * MULTIPLICATION MODE
- * ============================================================
+ * ------------------------------------------------------------
+ * MULTIPLY MODE
+ * ------------------------------------------------------------
  */
 
 if (
-    mb_strtolower($message) === 'multiply'
-    || mb_strtolower($message) === 'умножение'
-    || mb_strtolower($message) === '✖️ умножение'
+    $messageLower === 'multiply' ||
+    $messageLower === 'умножение' ||
+    $messageLower === '✖️ умножение'
 ) {
+    $states[$userId] = 'multiply';
+
+    file_put_contents(
+        $stateFile,
+        json_encode(
+            $states,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
+        )
+    );
+
     sendMessage(
         $bx,
         $botId,
-        $botToken,
+        $config['bot_token'],
         $dialogId,
         'Введите два числа через пробел. Например: 12 5'
     );
 
     http_response_code(200);
-    exit;
+    exit('OK');
 }
 
 /*
- * ============================================================
- * MULTIPLICATION
- * ============================================================
- *
- * Формат:
- *
- * 12 5
- *
- * или:
- *
- * 12 * 5
- */
-
-if (preg_match('/^\s*(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/u', $message, $matches)) {
-
-    $number1 = (float)str_replace(',', '.', $matches[1]);
-    $number2 = (float)str_replace(',', '.', $matches[2]);
-
-    $result = $number1 * $number2;
-
-    if (floor($result) == $result) {
-        $result = (int)$result;
-    }
-
-    sendMessage(
-        $bx,
-        $botId,
-        $botToken,
-        $dialogId,
-        "Результат: {$result}"
-    );
-
-    http_response_code(200);
-    exit;
-}
-
-/*
- * ============================================================
+ * ------------------------------------------------------------
  * GIF SEARCH
- * ============================================================
- *
- * Если сообщение не является командой и не является
- * двумя числами — считаем его поиском GIF.
+ * ------------------------------------------------------------
  */
 
-if ($message !== '') {
+if ($mode === 'gif') {
 
     $gifUrl = searchGiphy(
         $message,
@@ -282,36 +267,33 @@ if ($message !== '') {
     );
 
     if ($gifUrl === null) {
-
         sendMessage(
             $bx,
             $botId,
-            $botToken,
+            $config['bot_token'],
             $dialogId,
-            'Не удалось найти GIF 😔'
+            'GIF не найдена 😔'
         );
 
         http_response_code(200);
-        exit;
+        exit('OK');
     }
-
-    /*
-     * Отправляем GIF как IMAGE attachment.
-     */
 
     sendMessage(
         $bx,
         $botId,
-        $botToken,
+        $config['bot_token'],
         $dialogId,
         '',
         [
             'attach' => [
-                'BLOCKS' => [
-                    [
-                        'IMAGE' => [
-                            [
-                                'LINK' => $gifUrl,
+                [
+                    'BLOCKS' => [
+                        [
+                            'IMAGE' => [
+                                [
+                                    'LINK' => $gifUrl,
+                                ],
                             ],
                         ],
                     ],
@@ -321,21 +303,71 @@ if ($message !== '') {
     );
 
     http_response_code(200);
-    exit;
+    exit('OK');
 }
 
 /*
- * ============================================================
- * FALLBACK
- * ============================================================
+ * ------------------------------------------------------------
+ * MULTIPLICATION
+ * ------------------------------------------------------------
+ */
+
+if ($mode === 'multiply') {
+
+    if (
+        !preg_match(
+            '/^\s*(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/u',
+            $message,
+            $matches
+        )
+    ) {
+        sendMessage(
+            $bx,
+            $botId,
+            $config['bot_token'],
+            $dialogId,
+            'Нужно ввести только два числа через пробел. Например: 12 5'
+        );
+
+        http_response_code(200);
+        exit('OK');
+    }
+
+    $number1 = (float)str_replace(',', '.', $matches[1]);
+    $number2 = (float)str_replace(',', '.', $matches[2]);
+
+    $result = $number1 * $number2;
+
+    if (floor($result) === $result) {
+        $result = (int)$result;
+    }
+
+    sendMessage(
+        $bx,
+        $botId,
+        $config['bot_token'],
+        $dialogId,
+        "Результат: {$result}"
+    );
+
+    http_response_code(200);
+    exit('OK');
+}
+
+/*
+ * ------------------------------------------------------------
+ * UNKNOWN MESSAGE
+ * ------------------------------------------------------------
  */
 
 sendMessage(
     $bx,
     $botId,
-    $botToken,
+    $config['bot_token'],
     $dialogId,
-    'Не понял команду. Напишите /start'
+    'Сначала выберите действие через /start.'
 );
 
 http_response_code(200);
+
+echo 'OK';

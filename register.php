@@ -4,31 +4,35 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/BXConnector.php';
 
-$config = require __DIR__ . '/config.php';
-
 use BX\BXConnector;
+
+$config = require __DIR__ . '/config.php';
 
 $bx = new BXConnector($config['bitrix_webhook']);
 
-$result = $bx->request('imbot.v2.Bot.register', [
-    'fields' => [
-        'code' => $config['bot_code'],
+$result = $bx->request(
+    'imbot.v2.Bot.register',
+    [
+        'fields' => [
+            'code' => $config['bot_code'],
 
-        'botToken' => $config['bot_token'],
+            'botToken' => $config['bot_token'],
 
-        'type' => 'bot',
+            'type' => 'bot',
 
-        'eventMode' => 'webhook',
+            'eventMode' => 'webhook',
 
-        'webhookUrl' => $config['bot_webhook_url'],
+            'webhookUrl' => $config['bot_webhook_url'],
 
-        'properties' => [
-            'name' => 'GIF + Math Bot',
-            'workPosition' => 'Помощник',
-            'color' => 'azure',
+            'properties' => [
+                'name' => 'GIF + Math Bot',
+                'workPosition' => 'Помощник',
+                'color' => 'azure',
+            ],
         ],
     ],
-], 'full');
+    'full'
+);
 
 header('Content-Type: application/json; charset=utf-8');
 

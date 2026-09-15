@@ -6,9 +6,11 @@ function searchGiphy(string $query, string $apiKey): ?string
 {
     $query = trim($query);
 
-    if ($query === '') {
+    if ($query === '' || $apiKey === '') {
         return null;
     }
+
+    $query = mb_substr($query, 0, 50);
 
     $url = 'https://api.giphy.com/v1/gifs/search?' . http_build_query([
             'api_key' => $apiKey,
@@ -24,7 +26,6 @@ function searchGiphy(string $query, string $apiKey): ?string
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 10,
         CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_HTTPGET => true,
     ]);
 
     $response = curl_exec($curl);
@@ -44,17 +45,9 @@ function searchGiphy(string $query, string $apiKey): ?string
 
     $data = json_decode($response, true);
 
-    if (!is_array($data)) {
+    if (!is_array($data) || empty($data['data'][0])) {
         return null;
     }
 
-    if (empty($data['data'][0])) {
-        return null;
-    }
-
-    $gif = $data['data'][0];
-
-    return $gif['images']['original']['url']
-        ?? $gif['images']['fixed_height']['url']
-        ?? null;
+    return $data['data'][0]['images']['original']['url'] ?? null;
 }
