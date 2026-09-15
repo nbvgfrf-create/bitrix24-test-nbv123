@@ -2,6 +2,14 @@
 
 declare(strict_types=1);
 
+file_put_contents(
+    __DIR__ . '/bot_test.log',
+    date('Y-m-d H:i:s') . "\n" .
+    file_get_contents('php://input') .
+    "\n\n",
+    FILE_APPEND
+);
+
 require_once __DIR__ . '/BXConnector.php';
 require_once __DIR__ . '/Logger.php';
 require_once __DIR__ . '/giphy.php';
