@@ -2,380 +2,234 @@
 
 declare(strict_types=1);
 
-file_put_contents(
-    __DIR__ . '/bot_test.log',
-    date('Y-m-d H:i:s') . "\n" .
-    file_get_contents('php://input') .
-    "\n\n",
-    FILE_APPEND
-);
-
 require_once __DIR__ . '/BXConnector.php';
-require_once __DIR__ . '/Logger.php';
-require_once __DIR__ . '/giphy.php';
 
 use BX\BXConnector;
-use BX\Logger;
 
 $config = require __DIR__ . '/config.php';
 
-$logger = new Logger('bot');
+header('Content-Type: application/json; charset=utf-8');
 
-$raw = file_get_contents('php://input');
-
-$data = $_POST;
-
-if (empty($data) && $raw !== '') {
-    $json = json_decode($raw, true);
-
-    if (is_array($json)) {
-        $data = $json;
-    }
-}
-
-$logger->saveFile($data, 'incoming.log');
+$data = json_decode(file_get_contents('php://input'), true);
 
 if (!is_array($data)) {
-    http_response_code(400);
+    echo json_encode(['status' => 'error']);
     exit;
 }
 
-$event = (string)($data['event'] ?? '');
+/*
+ * Получаем данные сообщения
+ */
+$message = $data['data']['message'] ?? [];
+$text = trim((string)($message['text'] ?? ''));
 
-if ($event !== 'ONIMBOTV2MESSAGEADD') {
-    http_response_code(200);
-    exit('OK');
-}
+$dialogId = (string)($data['data']['chat']['dialogId'] ?? '');
 
-$botId = (int)($data['data']['bot']['id'] ?? 0);
+$botId = (int)($data['data']['bot']['id'] ?? 14);
 
-$message = trim(
-    (string)($data['data']['message']['text'] ?? '')
-);
-
-$dialogId = (string)(
-    $data['data']['chat']['dialogId'] ?? ''
-);
-
-$userId = (string)(
-    $data['data']['user']['id'] ?? ''
-);
-
-if ($botId === 0 || $dialogId === '' || $userId === '') {
-    http_response_code(200);
-    exit('OK');
+if ($dialogId === '') {
+    echo json_encode(['status' => 'error', 'message' => 'dialogId not found']);
+    exit;
 }
 
 /*
- * ------------------------------------------------------------
- * STATE
- * ------------------------------------------------------------
+ * Подключаемся к Bitrix24
  */
-
-$stateFile = __DIR__ . '/state.json';
-
-$states = [];
-
-if (file_exists($stateFile)) {
-    $saved = json_decode(
-        file_get_contents($stateFile),
-        true
-    );
-
-    if (is_array($saved)) {
-        $states = $saved;
-    }
-}
-
-$mode = $states[$userId] ?? null;
-
-/*
- * ------------------------------------------------------------
- * BITRIX CONNECTOR
- * ------------------------------------------------------------
- */
-
 $bx = new BXConnector($config['bitrix_webhook']);
 
 /*
- * ------------------------------------------------------------
- * SEND MESSAGE
- * ------------------------------------------------------------
+ * Функция отправки сообщения
  */
-
 function sendMessage(
     BXConnector $bx,
+    array $config,
     int $botId,
-    string $botToken,
     string $dialogId,
-    string $message,
-    array $fields = []
-): array {
-    $fields['message'] = $message;
-
-    return $bx->request(
+    string $message
+): void {
+    $bx->request(
         'imbot.v2.Chat.Message.send',
         [
             'botId' => $botId,
-            'botToken' => $botToken,
+            'botToken' => $config['bot_token'],
             'dialogId' => $dialogId,
-            'fields' => $fields,
+            'fields' => [
+                'message' => $message,
+            ],
         ],
         'full'
     );
 }
 
-/*
- * ------------------------------------------------------------
- * MENU
- * ------------------------------------------------------------
- */
-
-function sendMenu(
-    BXConnector $bx,
-    int $botId,
-    string $botToken,
-    string $dialogId
-): void {
-    sendMessage(
-        $bx,
-        $botId,
-        $botToken,
-        $dialogId,
-        'Выберите действие:',
-        [
-            'keyboard' => [
-                [
-                    [
-                        'TEXT' => '🎬 GIF',
-                        'COMMAND' => 'gif',
-                        'BG_COLOR_TOKEN' => 'primary',
-                    ],
-                    [
-                        'TEXT' => '✖️ Умножение',
-                        'COMMAND' => 'multiply',
-                        'BG_COLOR_TOKEN' => 'primary',
-                    ],
-                ],
-            ],
-        ]
-    );
-}
 
 /*
- * ------------------------------------------------------------
- * COMMAND / MENU
- * ------------------------------------------------------------
+ * /start
  */
-
-$messageLower = mb_strtolower($message);
-
-if (
-    $messageLower === '/start' ||
-    $messageLower === 'меню' ||
-    $messageLower === 'start'
-) {
-    $states[$userId] = null;
-
-    file_put_contents(
-        $stateFile,
-        json_encode(
-            $states,
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
-        )
-    );
-
-    sendMenu(
-        $bx,
-        $botId,
-        $config['bot_token'],
-        $dialogId
-    );
-
-    http_response_code(200);
-    exit('OK');
-}
-
-/*
- * ------------------------------------------------------------
- * GIF MODE
- * ------------------------------------------------------------
- */
-
-if (
-    $messageLower === 'gif' ||
-    $messageLower === '🎬 gif'
-) {
-    $states[$userId] = 'gif';
-
-    file_put_contents(
-        $stateFile,
-        json_encode(
-            $states,
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
-        )
-    );
+if ($text === '/start') {
 
     sendMessage(
         $bx,
+        $config,
         $botId,
-        $config['bot_token'],
         $dialogId,
-        'Напишите, какую GIF найти.'
+        "Доступные команды:\n\n" .
+        "/gif <текст> — найти GIF\n" .
+        "/multiply <число> <число> — умножить два числа"
     );
 
-    http_response_code(200);
-    exit('OK');
+    echo json_encode(['status' => 'ok']);
+    exit;
 }
 
-/*
- * ------------------------------------------------------------
- * MULTIPLY MODE
- * ------------------------------------------------------------
- */
-
-if (
-    $messageLower === 'multiply' ||
-    $messageLower === 'умножение' ||
-    $messageLower === '✖️ умножение'
-) {
-    $states[$userId] = 'multiply';
-
-    file_put_contents(
-        $stateFile,
-        json_encode(
-            $states,
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
-        )
-    );
-
-    sendMessage(
-        $bx,
-        $botId,
-        $config['bot_token'],
-        $dialogId,
-        'Введите два числа через пробел. Например: 12 5'
-    );
-
-    http_response_code(200);
-    exit('OK');
-}
 
 /*
- * ------------------------------------------------------------
- * GIF SEARCH
- * ------------------------------------------------------------
+ * /gif
+ *
+ * Пример:
+ * /gif кот
  */
+if (str_starts_with($text, '/gif')) {
 
-if ($mode === 'gif') {
+    $query = trim(substr($text, 4));
 
-    $gifUrl = searchGiphy(
-        $message,
-        $config['giphy_api_key']
-    );
-
-    if ($gifUrl === null) {
+    if ($query === '') {
         sendMessage(
             $bx,
+            $config,
             $botId,
-            $config['bot_token'],
             $dialogId,
-            'GIF не найдена 😔'
+            "Укажите запрос для GIF.\n\nПример:\n/gif кот"
         );
 
-        http_response_code(200);
-        exit('OK');
+        echo json_encode(['status' => 'ok']);
+        exit;
+    }
+
+    /*
+     * Запрашиваем GIF у Giphy
+     */
+    $url = 'https://api.giphy.com/v1/gifs/search?' . http_build_query([
+            'api_key' => $config['giphy_api_key'],
+            'q' => $query,
+            'limit' => 1,
+            'rating' => 'g',
+            'lang' => 'ru',
+        ]);
+
+    $response = file_get_contents($url);
+
+    if ($response === false) {
+        sendMessage(
+            $bx,
+            $config,
+            $botId,
+            $dialogId,
+            'Не удалось обратиться к Giphy.'
+        );
+
+        echo json_encode(['status' => 'ok']);
+        exit;
+    }
+
+    $giphy = json_decode($response, true);
+
+    $gifUrl = $giphy['data'][0]['images']['original']['url'] ?? '';
+
+    if ($gifUrl === '') {
+        sendMessage(
+            $bx,
+            $config,
+            $botId,
+            $dialogId,
+            "По запросу «{$query}» GIF не найден."
+        );
+
+        echo json_encode(['status' => 'ok']);
+        exit;
     }
 
     sendMessage(
         $bx,
+        $config,
         $botId,
-        $config['bot_token'],
         $dialogId,
-        '',
-        [
-            'attach' => [
-                [
-                    'BLOCKS' => [
-                        [
-                            'IMAGE' => [
-                                [
-                                    'LINK' => $gifUrl,
-                                ],
-                            ],
-                        ],
-                    ],
-                ],
-            ],
-        ]
+        $gifUrl
     );
 
-    http_response_code(200);
-    exit('OK');
+    echo json_encode(['status' => 'ok']);
+    exit;
 }
 
-/*
- * ------------------------------------------------------------
- * MULTIPLICATION
- * ------------------------------------------------------------
- */
 
-if ($mode === 'multiply') {
+/*
+ * /multiply
+ *
+ * Пример:
+ * /multiply 5 10
+ */
+if (str_starts_with($text, '/multiply')) {
+
+    $arguments = trim(substr($text, 9));
+
+    $parts = preg_split('/\s+/', $arguments);
 
     if (
-        !preg_match(
-            '/^\s*(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/u',
-            $message,
-            $matches
-        )
+        count($parts) !== 2 ||
+        !is_numeric($parts[0]) ||
+        !is_numeric($parts[1])
     ) {
         sendMessage(
             $bx,
+            $config,
             $botId,
-            $config['bot_token'],
             $dialogId,
-            'Нужно ввести только два числа через пробел. Например: 12 5'
+            "Нужно указать два числа.\n\n" .
+            "Пример:\n" .
+            "/multiply 5 10"
         );
 
-        http_response_code(200);
-        exit('OK');
+        echo json_encode(['status' => 'ok']);
+        exit;
     }
 
-    $number1 = (float)str_replace(',', '.', $matches[1]);
-    $number2 = (float)str_replace(',', '.', $matches[2]);
+    $a = (float)$parts[0];
+    $b = (float)$parts[1];
 
-    $result = $number1 * $number2;
+    $result = $a * $b;
 
-    if (floor($result) === $result) {
+    /*
+     * Если результат целый — показываем без .0
+     */
+    if (floor($result) == $result) {
         $result = (int)$result;
     }
 
     sendMessage(
         $bx,
+        $config,
         $botId,
-        $config['bot_token'],
         $dialogId,
-        "Результат: {$result}"
+        "{$a} × {$b} = {$result}"
     );
 
-    http_response_code(200);
-    exit('OK');
+    echo json_encode(['status' => 'ok']);
+    exit;
 }
 
-/*
- * ------------------------------------------------------------
- * UNKNOWN MESSAGE
- * ------------------------------------------------------------
- */
 
+/*
+ * Неизвестная команда / обычный текст
+ */
 sendMessage(
     $bx,
+    $config,
     $botId,
-    $config['bot_token'],
     $dialogId,
-    'Сначала выберите действие через /start.'
+    "Неизвестная команда.\n\n" .
+    "Доступные команды:\n" .
+    "/gif <текст> — найти GIF\n" .
+    "/multiply <число> <число> — умножить два числа\n\n" .
+    "Для начала можно написать /start."
 );
 
-http_response_code(200);
-
-echo 'OK';
+echo json_encode(['status' => 'ok']);
