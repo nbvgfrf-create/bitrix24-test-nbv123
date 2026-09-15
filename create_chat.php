@@ -10,7 +10,6 @@ $config = require __DIR__ . '/config.php';
 
 $bx = new BXConnector($config['bitrix_webhook']);
 
-// Узнаём ID текущего пользователя
 $user = $bx->request('user.current', [], 'full');
 
 if (!empty($user['error'])) {

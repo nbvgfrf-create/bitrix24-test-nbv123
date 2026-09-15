@@ -15,15 +15,10 @@ $result = $bx->request(
     [
         'fields' => [
             'code' => $config['bot_code'],
-
             'botToken' => $config['bot_token'],
-
             'type' => 'bot',
-
             'eventMode' => 'webhook',
-
             'webhookUrl' => $config['bot_webhook_url'],
-
             'properties' => [
                 'name' => 'GIF + Math Bot',
                 'workPosition' => 'Помощник',
