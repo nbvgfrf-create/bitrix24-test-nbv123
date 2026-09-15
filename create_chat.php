@@ -2,7 +2,13 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/BXConnector.php';
+$bxConnectorFile = __DIR__ . '/BXConnector.php';
+
+if (!file_exists($bxConnectorFile)) {
+    die('BXConnector.php не найден: ' . $bxConnectorFile);
+}
+
+require_once $bxConnectorFile;
 
 $config = require __DIR__ . '/config.php';
 
