@@ -2,6 +2,8 @@
 
 require_once __DIR__ . '/config.php';
 
+$bx = new Bitrix();
+
 echo '<!doctype html>
 <html lang="ru">
 <head>
@@ -13,16 +15,21 @@ echo '<!doctype html>
             max-width: 900px;
             margin: 40px auto;
             padding: 0 20px;
+            line-height: 1.5;
         }
+
         .ok {
             color: green;
         }
+
         .error {
             color: red;
         }
+
         .info {
             color: #555;
         }
+
         pre {
             background: #f5f5f5;
             padding: 15px;
@@ -31,20 +38,19 @@ echo '<!doctype html>
     </style>
 </head>
 <body>
+
 <h1>Настройка Bitrix24</h1>';
 
 try {
+
     /*
      * ---------------------------------------------------------
-     * 1. Получаем существующие типы компаний
+     * Получить существующие значения справочника
      * ---------------------------------------------------------
-     *
-     * Если значение уже существует — используем его.
-     * Если нет — создаём.
      */
-    function getOrCreateStatus(string $entityId, string $name): string
+    function getStatuses(Bitrix $bx, string $entityId): array
     {
-        $statuses = bitrix('crm.status.list', [
+        return $bx->list('crm.status.list', [
             'filter' => [
                 'ENTITY_ID' => $entityId,
             ],
@@ -52,29 +58,86 @@ try {
                 'SORT' => 'ASC',
             ],
         ]);
+    }
+
+
+    /*
+     * ---------------------------------------------------------
+     * Получить STATUS_ID по названию.
+     *
+     * Если значения нет — создать.
+     *
+     * ВАЖНО:
+     * сначала проверяем и NAME, и STATUS_ID.
+     * Поэтому повторный запуск setup.php не создаёт
+     * дубликаты.
+     * ---------------------------------------------------------
+     */
+    function getOrCreateStatus(
+        Bitrix $bx,
+        string $entityId,
+        string $name
+    ): string {
+
+        $name = trim($name);
+
+        if ($name === '') {
+            return '';
+        }
+
+        $statuses = getStatuses($bx, $entityId);
 
         foreach ($statuses as $status) {
+
+            $statusName = trim((string)($status['NAME'] ?? ''));
+
             if (
-                mb_strtolower(trim($status['NAME'])) ===
-                mb_strtolower(trim($name))
+                mb_strtolower($statusName) ===
+                mb_strtolower($name)
             ) {
-                return $status['STATUS_ID'];
+                return (string)$status['STATUS_ID'];
             }
         }
 
-        $statusId = strtoupper(
-            preg_replace(
-                '/[^A-Za-z0-9_]+/',
-                '_',
-                transliterate($name)
-            )
-        );
 
-        if ($statusId === '') {
-            $statusId = 'VALUE_' . time();
+        /*
+         * Создаём уникальный STATUS_ID.
+         *
+         * Для наших справочников можно использовать
+         * простой латинский код.
+         */
+        $baseId = slug($name);
+
+        if ($baseId === '') {
+            $baseId = 'VALUE';
         }
 
-        $result = bitrix('crm.status.add', [
+        $statusId = strtoupper($baseId);
+
+        $existingIds = [];
+
+        foreach ($statuses as $status) {
+            if (!empty($status['STATUS_ID'])) {
+                $existingIds[] = strtoupper(
+                    (string)$status['STATUS_ID']
+                );
+            }
+        }
+
+        /*
+         * Если такой STATUS_ID уже существует,
+         * добавляем номер.
+         */
+        $originalId = $statusId;
+        $number = 2;
+
+        while (in_array($statusId, $existingIds, true)) {
+            $statusId = $originalId . '_' . $number;
+            $number++;
+        }
+
+
+        $result = $bx->call('crm.status.add', [
             'fields' => [
                 'ENTITY_ID' => $entityId,
                 'STATUS_ID' => $statusId,
@@ -83,82 +146,157 @@ try {
             ],
         ]);
 
-        return $result;
+        return (string)$statusId;
     }
 
-    /*
-     * Простая транслитерация для STATUS_ID.
-     */
-    function transliterate(string $text): string
-    {
-        $map = [
-            'А'=>'A','Б'=>'B','В'=>'V','Г'=>'G','Д'=>'D','Е'=>'E','Ё'=>'E',
-            'Ж'=>'ZH','З'=>'Z','И'=>'I','Й'=>'Y','К'=>'K','Л'=>'L','М'=>'M',
-            'Н'=>'N','О'=>'O','П'=>'P','Р'=>'R','С'=>'S','Т'=>'T','У'=>'U',
-            'Ф'=>'F','Х'=>'H','Ц'=>'C','Ч'=>'CH','Ш'=>'SH','Щ'=>'SCH',
-            'Ъ'=>'','Ы'=>'Y','Ь'=>'','Э'=>'E','Ю'=>'YU','Я'=>'YA',
-        ];
-
-        return strtr(mb_strtoupper($text), $map);
-    }
 
     /*
      * ---------------------------------------------------------
-     * 2. Типы компаний
+     * 1. Получаем реальные значения из Excel
+     * ---------------------------------------------------------
+     *
+     * Типы и отрасли не придумываем вручную.
+     * Берём их из companies (5).xlsx.
+     */
+
+    $excelFile = EXCEL_FILE;
+
+    if (!file_exists($excelFile)) {
+        throw new Exception(
+            'Не найден Excel-файл: ' . $excelFile
+        );
+    }
+
+
+    /*
+     * PhpSpreadsheet установлен в Docker.
+     */
+    require_once __DIR__ . '/vendor/autoload.php';
+
+    $spreadsheet = \PhpOffice\PhpSpreadsheet\IOFactory::load(
+        $excelFile
+    );
+
+    $sheet = $spreadsheet->getActiveSheet();
+
+    $highestRow = $sheet->getHighestRow();
+
+
+    $companyTypes = [];
+    $industries = [];
+    $competitorValues = [];
+
+
+    /*
+     * Колонки Excel:
+     *
+     * A = Название
+     * B = Основной контакт
+     * C = Тип
+     * D = Отрасль
+     * ...
+     * L = Competitor software
+     */
+    for ($row = 2; $row <= $highestRow; $row++) {
+
+        $type = clean(
+            $sheet->getCell('C' . $row)->getValue()
+        );
+
+        $industry = clean(
+            $sheet->getCell('D' . $row)->getValue()
+        );
+
+        $competitor = clean(
+            $sheet->getCell('L' . $row)->getValue()
+        );
+
+
+        if ($type !== '' && !in_array(
+                $type,
+                $companyTypes,
+                true
+            )) {
+            $companyTypes[] = $type;
+        }
+
+
+        if ($industry !== '' && !in_array(
+                $industry,
+                $industries,
+                true
+            )) {
+            $industries[] = $industry;
+        }
+
+
+        foreach (splitValues($competitor) as $value) {
+
+            if (!in_array(
+                $value,
+                $competitorValues,
+                true
+            )) {
+                $competitorValues[] = $value;
+            }
+        }
+    }
+
+
+    echo '<p class="info">';
+    echo 'Найдено типов компаний: ' . count($companyTypes);
+    echo '<br>';
+    echo 'Найдено отраслей: ' . count($industries);
+    echo '<br>';
+    echo 'Найдено значений Competitor software: ' .
+        count($competitorValues);
+    echo '</p>';
+
+
+    /*
+     * ---------------------------------------------------------
+     * 2. COMPANY_TYPE
      * ---------------------------------------------------------
      */
-    $companyTypes = [
-        'Клиент',
-        'Партнер',
-        'Поставщик',
-        'Конкурент',
-        'Инвестор',
-        'Другое',
-    ];
-
     $companyTypeMap = [];
 
     foreach ($companyTypes as $name) {
-        $companyTypeMap[$name] = getOrCreateStatus(
+
+        $statusId = getOrCreateStatus(
+            $bx,
             'COMPANY_TYPE',
             $name
         );
+
+        $companyTypeMap[$name] = $statusId;
     }
 
-    echo '<p class="ok">✓ Типы компаний проверены</p>';
+    echo '<p class="ok">';
+    echo '✓ COMPANY_TYPE проверен';
+    echo '</p>';
 
 
     /*
      * ---------------------------------------------------------
-     * 3. Отрасли
+     * 3. INDUSTRY
      * ---------------------------------------------------------
-     *
-     * Пока создаём только те значения, которые были нужны
-     * в исходном импорте.
-     *
-     * Если значение уже есть — повторно не создаём.
      */
-    $industries = [
-        'Машиностроение',
-        'Металлургия',
-        'Авиационная промышленность',
-        'Автомобильная промышленность',
-        'Образование',
-        'Наука',
-        'IT',
-        'Другое',
-    ];
-
     $industryMap = [];
 
     foreach ($industries as $name) {
-        $industryMap[$name] = getOrCreateStatus(
+
+        $statusId = getOrCreateStatus(
+            $bx,
             'INDUSTRY',
             $name
         );
+
+        $industryMap[$name] = $statusId;
     }
 
-    echo '<p class="ok">✓ Отрасли проверены</p>';
+    echo '<p class="ok">';
+    echo '✓ INDUSTRY проверен';
+    echo '</p>';
 
 
     /*
@@ -166,17 +304,24 @@ try {
      * 4. Получаем существующие пользовательские поля
      * ---------------------------------------------------------
      */
-    $existingFields = bitrix('crm.company.userfield.list', [
-        'order' => [
-            'ID' => 'ASC',
-        ],
-    ]);
+    $existingFields = $bx->list(
+        'crm.company.userfield.list',
+        [
+            'order' => [
+                'ID' => 'ASC',
+            ],
+        ]
+    );
 
     $fieldMap = [];
 
     foreach ($existingFields as $field) {
+
         if (!empty($field['FIELD_NAME'])) {
-            $fieldMap[$field['FIELD_NAME']] = $field;
+
+            $fieldMap[
+            $field['FIELD_NAME']
+            ] = $field;
         }
     }
 
@@ -187,49 +332,90 @@ try {
      * ---------------------------------------------------------
      */
     function createCompanyField(
+        Bitrix $bx,
+        array &$fieldMap,
         string $fieldName,
         string $label,
         string $type,
         bool $multiple = false,
-        array $list = [],
-        array $settings = []
+        array $list = []
     ): array {
-        global $fieldMap;
 
+        /*
+         * Bitrix сам добавляет UF_CRM_.
+         *
+         * Поэтому в API передаём только имя поля
+         * без UF_CRM_.
+         */
         $fullName = 'UF_CRM_' . $fieldName;
 
+
+        /*
+         * Уже существует?
+         */
         if (isset($fieldMap[$fullName])) {
+
+            echo '<p class="ok">';
+            echo '✓ Поле «' .
+                htmlspecialchars($label) .
+                '» уже существует';
+            echo '</p>';
+
             return $fieldMap[$fullName];
         }
 
+
         $fields = [
             'FIELD_NAME' => $fieldName,
+
             'EDIT_FORM_LABEL' => [
                 'ru' => $label,
             ],
+
             'LIST_COLUMN_LABEL' => [
                 'ru' => $label,
             ],
+
             'LIST_FILTER_LABEL' => [
                 'ru' => $label,
             ],
+
             'USER_TYPE_ID' => $type,
+
             'MULTIPLE' => $multiple ? 'Y' : 'N',
+
             'MANDATORY' => 'N',
+
             'SHOW_FILTER' => 'Y',
+
             'SHOW_IN_LIST' => 'Y',
+
             'EDIT_IN_LIST' => 'Y',
         ];
 
-        if ($type === 'enumeration' && $list) {
+
+        /*
+         * Список.
+         */
+        if (
+            $type === 'enumeration' &&
+            !empty($list)
+        ) {
+
             $fields['LIST'] = $list;
-            $fields['SETTINGS'] = $settings ?: [
+
+            $fields['SETTINGS'] = [
                 'DISPLAY' => 'UI',
                 'LIST_HEIGHT' => 5,
             ];
         }
 
+
+        /*
+         * CRM-связь с компаниями.
+         */
         if ($type === 'crm') {
+
             $fields['SETTINGS'] = [
                 'CONTACT' => 'N',
                 'COMPANY' => 'Y',
@@ -238,15 +424,54 @@ try {
             ];
         }
 
-        $id = bitrix('crm.company.userfield.add', [
-            'fields' => $fields,
-        ]);
 
-        $field['ID'] = $id;
-        $field['FIELD_NAME'] = $fullName;
-        $field['LABEL'] = $label;
+        $id = $bx->call(
+            'crm.company.userfield.add',
+            [
+                'fields' => $fields,
+            ]
+        );
+
+
+        /*
+         * После создания снова получаем поле,
+         * чтобы сохранить его реальные данные.
+         */
+        $createdFields = $bx->list(
+            'crm.company.userfield.list',
+            [
+                'filter' => [
+                    'ID' => $id,
+                ],
+            ]
+        );
+
+
+        if (!empty($createdFields[0])) {
+
+            $field = $createdFields[0];
+
+        } else {
+
+            $field = [
+                'ID' => $id,
+                'FIELD_NAME' => $fullName,
+                'EDIT_FORM_LABEL' => [
+                    'ru' => $label,
+                ],
+            ];
+        }
+
 
         $fieldMap[$fullName] = $field;
+
+
+        echo '<p class="ok">';
+        echo '✓ Поле «' .
+            htmlspecialchars($label) .
+            '» создано';
+        echo '</p>';
+
 
         return $field;
     }
@@ -254,55 +479,58 @@ try {
 
     /*
      * ---------------------------------------------------------
-     * 5. Создаём наши пользовательские поля
+     * 5. Страна
      * ---------------------------------------------------------
      */
-
     $countryField = createCompanyField(
+        $bx,
+        $fieldMap,
         'COUNTRY_IMPORT',
         'Страна',
         'string'
     );
 
-    echo '<p class="ok">✓ Поле «Страна» проверено</p>';
 
-
+    /*
+     * ---------------------------------------------------------
+     * 6. Старый ответственный
+     * ---------------------------------------------------------
+     */
     $oldResponsibleField = createCompanyField(
+        $bx,
+        $fieldMap,
         'OLD_RESPONSIBLE',
         'Старый ответственный',
         'string'
     );
 
-    echo '<p class="ok">✓ Поле «Старый ответственный» проверено</p>';
 
-
+    /*
+     * ---------------------------------------------------------
+     * 7. Дистрибьютор
+     * ---------------------------------------------------------
+     */
     $distributorField = createCompanyField(
+        $bx,
+        $fieldMap,
         'DISTRIBUTOR',
         'Дистрибьютор',
         'crm',
         true
     );
 
-    echo '<p class="ok">✓ Поле «Дистрибьютор» проверено</p>';
-
 
     /*
-     * Competitor software
-     *
-     * Пока используем значения из исходного Excel.
+     * ---------------------------------------------------------
+     * 8. Competitor software
+     * ---------------------------------------------------------
      */
-    $competitorValues = [
-        'Simufact',
-        'Deform',
-        'Forge',
-        'HyperXtrude',
-        'Hyper Extrude',
-        'Другие',
-    ];
-
     $competitorList = [];
 
-    foreach ($competitorValues as $index => $value) {
+    foreach (
+        $competitorValues as $index => $value
+    ) {
+
         $competitorList[] = [
             'VALUE' => $value,
             'SORT' => ($index + 1) * 10,
@@ -310,7 +538,10 @@ try {
         ];
     }
 
+
     $competitorField = createCompanyField(
+        $bx,
+        $fieldMap,
         'COMPETITOR_SOFTWARE',
         'Competitor software',
         'enumeration',
@@ -318,71 +549,153 @@ try {
         $competitorList
     );
 
-    echo '<p class="ok">✓ Поле «Competitor software» проверено</p>';
 
-
+    /*
+     * ---------------------------------------------------------
+     * 9. License expiration date
+     * ---------------------------------------------------------
+     */
     $licenseDateField = createCompanyField(
+        $bx,
+        $fieldMap,
         'LICENSE_EXPIRATION_DATE',
         'License expiration date',
         'date'
     );
 
-    echo '<p class="ok">✓ Поле «License expiration date» проверено</p>';
+
+    /*
+     * ---------------------------------------------------------
+     * 10. Ищем Тимофея Жмаева
+     * ---------------------------------------------------------
+     */
+    $users = $bx->list(
+        'user.search',
+        [
+            'FILTER' => [
+                'NAME' => 'Тимофей',
+                'LAST_NAME' => 'Жмаев',
+            ],
+        ]
+    );
+
+
+    $responsibleId = '';
+
+    foreach ($users as $user) {
+
+        $fullName = trim(
+            ($user['NAME'] ?? '') . ' ' .
+            ($user['LAST_NAME'] ?? '')
+        );
+
+        if (
+            mb_strtolower($fullName) ===
+            mb_strtolower('Тимофей Жмаев')
+        ) {
+            $responsibleId = (string)$user['ID'];
+            break;
+        }
+    }
+
+
+    if ($responsibleId !== '') {
+
+        echo '<p class="ok">';
+        echo '✓ Тимофей Жмаев найден. ID: ' .
+            htmlspecialchars($responsibleId);
+        echo '</p>';
+
+    } else {
+
+        echo '<p class="info">';
+        echo '⚠ Тимофей Жмаев не найден автоматически.';
+        echo '</p>';
+    }
 
 
     /*
      * ---------------------------------------------------------
-     * 6. Сохраняем настройки
+     * 11. Сохраняем setup.json
      * ---------------------------------------------------------
      */
     $setup = [
         'company_types' => $companyTypeMap,
+
         'industries' => $industryMap,
 
         'fields' => [
-            'country' => $countryField['FIELD_NAME'],
-            'old_responsible' => $oldResponsibleField['FIELD_NAME'],
-            'distributor' => $distributorField['FIELD_NAME'],
-            'competitor_software' => $competitorField['FIELD_NAME'],
-            'license_expiration_date' => $licenseDateField['FIELD_NAME'],
+            'country' =>
+                $countryField['FIELD_NAME'],
+
+            'old_responsible' =>
+                $oldResponsibleField['FIELD_NAME'],
+
+            'distributor' =>
+                $distributorField['FIELD_NAME'],
+
+            'competitor_software' =>
+                $competitorField['FIELD_NAME'],
+
+            'license_expiration_date' =>
+                $licenseDateField['FIELD_NAME'],
         ],
 
-        'responsible_name' => 'Тимофей Жмаев',
+        'responsible' => [
+            'name' => 'Тимофей Жмаев',
+            'id' => $responsibleId,
+        ],
 
-        'created_at' => date('Y-m-d H:i:s'),
+        'competitor_values' =>
+            $competitorValues,
+
+        'created_at' =>
+            date('Y-m-d H:i:s'),
     ];
 
-    file_put_contents(
+
+    saveJson(
         __DIR__ . '/setup.json',
-        json_encode(
-            $setup,
-            JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT
-        )
+        $setup
     );
 
 
     echo '<hr>';
-    echo '<h2 class="ok">Настройка завершена</h2>';
 
-    echo '<p>Теперь можно перейти к:</p>';
+    echo '<h2 class="ok">';
+    echo 'Настройка завершена';
+    echo '</h2>';
 
-    echo '<ol>
-        <li>xlsx_to_json.php</li>
-        <li>worker.php</li>
-    </ol>';
+    echo '<p>';
+    echo 'Файл setup.json сохранён.';
+    echo '</p>';
 
-    echo '<p class="info">
-        setup.php после этого можно удалить из проекта.
-        Файл setup.json нужен для дальнейшей работы импорта.
-    </p>';
+    echo '<p>';
+    echo 'Следующий шаг: ';
+    echo '<a href="xlsx_to_json.php">';
+    echo 'xlsx_to_json.php';
+    echo '</a>';
+    echo '</p>';
+
+    echo '<p class="info">';
+    echo 'После проверки настройки setup.php можно удалить.';
+    echo '</p>';
+
 
 } catch (Throwable $e) {
 
-    echo '<h2 class="error">ОШИБКА</h2>';
+    echo '<h2 class="error">';
+    echo 'ОШИБКА';
+    echo '</h2>';
 
     echo '<pre class="error">';
-    echo htmlspecialchars($e->getMessage());
+    echo htmlspecialchars(
+        $e->getMessage(),
+        ENT_QUOTES | ENT_SUBSTITUTE,
+        'UTF-8'
+    );
     echo '</pre>';
 }
 
-echo '</body></html>';
+echo '</body>';
+echo '</html>';
