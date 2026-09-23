@@ -1,168 +1,42 @@
 <?php
 
-const BITRIX_HOOK = 'https://b24-ef9noe.bitrix24.ru/rest/1/55yppqh1b90kq575/';
-const EXCEL_FILE = __DIR__ . '/companies (5).xlsx';
-const QUEUE_DIR = __DIR__ . '/queues';
-const LOG_FILE = __DIR__ . '/logs/import.log';
-const WORK_TIME = 60; // worker старается работать не дольше минуты
+declare(strict_types=1);
 
-class Bitrix
-{
-    public function call($method, $params = [])
-    {
-        $ch = curl_init(BITRIX_HOOK . $method);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POSTFIELDS => http_build_query($params),
-            CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_TIMEOUT => 50,
-        ]);
+return [
+    'BITRIX_HOOK' => 'https://YOUR-DOMAIN.bitrix24.ru/rest/USER_ID/WEBHOOK_KEY/',
+    'XLSX_FILE' => __DIR__ . '/companies (5).xlsx',
 
-        $response = curl_exec($ch);
-        $error = curl_error($ch);
-        curl_close($ch);
+    'RESPONSIBLE_FIRST_NAME' => 'Тимофей',
+    'RESPONSIBLE_LAST_NAME' => 'Жмаев',
 
-        if ($response === false) {
-            throw new Exception('cURL: ' . $error);
-        }
+    // ВАЖНО: это именно названия уже существующих пользовательских полей компаний.
+    'FIELDS' => [
+        'country' => 'UF_CRM_IMPORT_COUNTRY',
+        'old_responsible' => 'UF_CRM_IMPORT_OLD_RESPONSIBLE',
+        'distributor' => 'UF_CRM_IMPORT_DISTRIBUTOR',
+        'competitor_software' => 'UF_CRM_IMPORT_COMPETITOR_SOFTWARE',
+        'license_expiration' => 'UF_CRM_IMPORT_LICENSE_EXPIRATION',
+    ],
 
-        $data = json_decode($response, true);
-        if (!is_array($data)) {
-            throw new Exception('Bitrix вернул не JSON: ' . $response);
-        }
+    // Параметры worker.
+    'WORKER_BUDGET_SECONDS' => 70,
+    'BATCH_SIZE' => 5,
+    'ADDRESS_BATCH_SIZE' => 20,
+    'MAX_ATTEMPTS' => 5,
 
-        if (isset($data['error'])) {
-            throw new Exception($data['error'] . ': ' . ($data['error_description'] ?? ''));
-        }
+    'HTTP_CONNECT_TIMEOUT' => 5,
+    'HTTP_TIMEOUT' => 80,
+    'REQUEST_INTERVAL' => 0.10,
 
-        return $data['result'] ?? null;
-    }
+    'QUEUES_DIR' => __DIR__ . '/queues',
+    'LOGS_DIR' => __DIR__ . '/logs',
+    'LOCKS_DIR' => __DIR__ . '/locks',
+    'RUNTIME_FILE' => __DIR__ . '/runtime.json',
+    'RUN_LOCK' => __DIR__ . '/locks/worker.lock',
 
-    public function list($method, $params = [])
-    {
-        $all = [];
-        $start = 0;
-
-        do {
-            $params['start'] = $start;
-            $result = $this->call($method, $params);
-            if (!is_array($result)) {
-                break;
-            }
-            $all = array_merge($all, $result);
-            $start += 50;
-        } while (count($result) === 50);
-
-        return $all;
-    }
-}
-
-function logMessage($message)
-{
-    if (!is_dir(dirname(LOG_FILE))) {
-        mkdir(dirname(LOG_FILE), 0777, true);
-    }
-    file_put_contents(LOG_FILE, date('Y-m-d H:i:s') . ' ' . $message . PHP_EOL, FILE_APPEND);
-}
-
-function loadJson($file, $default = [])
-{
-    if (!file_exists($file)) {
-        return $default;
-    }
-
-    $data = json_decode(file_get_contents($file), true);
-    return is_array($data) ? $data : $default;
-}
-
-function saveJson($file, $data)
-{
-    if (!is_dir(dirname($file))) {
-        mkdir(dirname($file), 0777, true);
-    }
-
-    file_put_contents(
-        $file,
-        json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
-        LOCK_EX
-    );
-}
-
-function clean($value)
-{
-    $value = trim((string)$value);
-    if ($value === '' || $value === '14') {
-        return '';
-    }
-    return $value;
-}
-
-function splitValues($value)
-{
-    $value = clean($value);
-    if ($value === '') {
-        return [];
-    }
-
-    $parts = preg_split('/\s*[,;]\s*/u', $value);
-    $result = [];
-    foreach ($parts as $part) {
-        $part = clean($part);
-        if ($part !== '' && !in_array($part, $result, true)) {
-            $result[] = $part;
-        }
-    }
-    return $result;
-}
-
-function normalize($value)
-{
-    $value = mb_strtolower(trim((string)$value));
-    $value = str_replace('ё', 'е', $value);
-    $value = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $value);
-    return trim(preg_replace('/\s+/u', ' ', $value));
-}
-
-function personKey($name)
-{
-    $name = normalize($name);
-    if ($name === '') {
-        return '';
-    }
-
-    $parts = preg_split('/\s+/u', $name);
-    $parts = array_values(array_filter($parts, function ($x) {
-        return mb_strlen($x) >= 1;
-    }));
-    sort($parts, SORT_STRING);
-
-    return implode(' ', $parts);
-}
-
-function dateValue($value)
-{
-    if ($value === null || $value === '') {
-        return '';
-    }
-
-    if ($value instanceof DateTimeInterface) {
-        return $value->format('Y-m-d');
-    }
-
-    if (is_numeric($value)) {
-        $date = new DateTime('1899-12-30');
-        $date->modify('+' . (int)$value . ' days');
-        return $date->format('Y-m-d');
-    }
-
-    $time = strtotime((string)$value);
-    return $time ? date('Y-m-d', $time) : '';
-}
-
-function slug($value)
-{
-    $value = normalize($value);
-    $value = preg_replace('/[^a-z0-9а-я]+/u', '_', $value);
-    return trim($value, '_');
-}
+    'QUEUES' => [
+        'distributors' => __DIR__ . '/queues/distributors.json',
+        'contacts' => __DIR__ . '/queues/contacts.json',
+        'companies' => __DIR__ . '/queues/companies.json',
+    ],
+];
