@@ -116,6 +116,12 @@ saveJson(QUEUE_DIR . '/distributors.json', array_values($distributors));
 saveJson(QUEUE_DIR . '/contacts.json', array_values($contacts));
 saveJson(QUEUE_DIR . '/companies.json', array_values($companies));
 
+// После создания новых очередей всегда начинаем импорт заново
+// с первого этапа.
+saveJson(__DIR__ . '/worker_stage.json', [
+    'stage' => 'distributors',
+]);
+
 $result = sprintf(
     "Готово. Дистрибьюторов: %d, контактов: %d, компаний: %d\n",
     count($distributors), count($contacts), count($companies)
