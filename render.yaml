@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: bitrix24-test-nbv123
+    runtime: docker
+    plan: free
+    healthCheckPath: /run.php
