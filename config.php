@@ -12,7 +12,7 @@ return [
     | BITRIX_HOOK
     |
     */
-    'BITRIX_HOOK' => getenv('https://b24-ef9noe.bitrix24.ru/rest/1/55yppqh1b90kq575/') ?: '',
+    'BITRIX_HOOK' => 'https://b24-ef9noe.bitrix24.ru/rest/1/55yppqh1b90kq575/',
 
     /*
     |--------------------------------------------------------------------------
