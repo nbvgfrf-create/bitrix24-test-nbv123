@@ -1,6 +1,3 @@
-.idea/
-*.log
-runtime.json
-queues/*.json
-locks/*
-logs/*
+/data/queues/*.json
+/data/worker.lock
+/vendor/

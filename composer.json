@@ -1,9 +1,8 @@
 {
-    "name": "nbvgfrf/bitrix24-xlsx-import",
-    "description": "Bitrix24 XLSX importer",
-    "type": "project",
-    "require": {
-        "php": ">=8.3",
-        "phpoffice/phpspreadsheet": "^5.0"
-    }
+  "name": "nbvgfrf/bitrix24-xlsx-import",
+  "type": "project",
+  "require": {
+    "php": ">=8.3",
+    "phpoffice/phpspreadsheet": "^5.0"
+  }
 }
