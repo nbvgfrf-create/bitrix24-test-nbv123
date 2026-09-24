@@ -1,0 +1,8 @@
+.git
+.gitignore
+.idea
+logs
+locks
+runtime.json
+queues/*.json
+vendor/bin
