@@ -19,7 +19,7 @@ class XlsxReader
         }
 
         if (!is_file($path)) {
-            throw new RuntimeException('Не найден XLSX: ' . $path);
+            throw new RuntimeException('Файл XLSX не найден: ' . $path);
         }
 
         $zip = new ZipArchive();
@@ -46,23 +46,31 @@ class XlsxReader
             $main = $xml->children(self::MAIN_NS);
             $sheetData = $main->sheetData;
 
+            if (!isset($sheetData)) {
+                throw new RuntimeException('В первом листе XLSX отсутствует sheetData.');
+            }
+
             $rows = [];
 
             foreach ($sheetData->row as $rowNode) {
-                $rowMain = $rowNode->children(self::MAIN_NS);
                 $cells = [];
 
-                foreach ($rowMain->c as $cell) {
-                    $ref = (string)$cell['r'];
+                foreach ($rowNode->children(self::MAIN_NS) as $cell) {
+                    if ($cell->getName() !== 'c') {
+                        continue;
+                    }
+
+                    $attributes = $cell->attributes();
+                    $ref = isset($attributes['r']) ? (string)$attributes['r'] : '';
 
                     if ($ref === '') {
                         continue;
                     }
 
                     $index = $this->columnIndex($ref);
-                    $type = (string)$cell['t'];
-                    $cellMain = $cell->children(self::MAIN_NS);
+                    $type = isset($attributes['t']) ? (string)$attributes['t'] : '';
                     $value = '';
+                    $cellMain = $cell->children(self::MAIN_NS);
 
                     if ($type === 's') {
                         $raw = isset($cellMain->v) ? (string)$cellMain->v : '';
@@ -71,7 +79,7 @@ class XlsxReader
                             $value = $sharedStrings[(int)$raw] ?? '';
                         }
                     } elseif ($type === 'inlineStr') {
-                        $value = $this->readInlineString($cellMain->is ?? null);
+                        $value = $this->readInlineString($cell);
                     } elseif ($type === 'b') {
                         $raw = isset($cellMain->v) ? (string)$cellMain->v : '';
                         $value = ($raw === '1');
@@ -120,8 +128,8 @@ class XlsxReader
         $result = [];
 
         foreach ($main->si as $item) {
-            $itemMain = $item->children(self::MAIN_NS);
             $parts = [];
+            $itemMain = $item->children(self::MAIN_NS);
 
             foreach ($itemMain->t as $text) {
                 $parts[] = (string)$text;
@@ -129,9 +137,8 @@ class XlsxReader
 
             foreach ($itemMain->r as $run) {
                 $runMain = $run->children(self::MAIN_NS);
-
-                foreach ($runMain->t as $text) {
-                    $parts[] = (string)$text;
+                if (isset($runMain->t)) {
+                    $parts[] = (string)$runMain->t;
                 }
             }
 
@@ -157,16 +164,16 @@ class XlsxReader
             throw new RuntimeException('Не удалось разобрать workbook XML.');
         }
 
-        $main = $workbook->children(self::MAIN_NS);
-        $sheets = $main->sheets;
+        $workbookMain = $workbook->children(self::MAIN_NS);
+        $sheets = $workbookMain->sheets;
 
         if (!isset($sheets->sheet) || count($sheets->sheet) === 0) {
             throw new RuntimeException('В XLSX нет листов.');
         }
 
         $first = $sheets->sheet[0];
-        $attributes = $first->attributes(self::REL_NS);
-        $rid = $attributes !== null ? (string)$attributes['id'] : '';
+        $sheetAttributes = $first->attributes(self::REL_NS);
+        $rid = isset($sheetAttributes['id']) ? (string)$sheetAttributes['id'] : '';
 
         if ($rid === '') {
             throw new RuntimeException('У первого листа XLSX отсутствует r:id.');
@@ -175,11 +182,14 @@ class XlsxReader
         $relsMain = $rels->children(self::PACKAGE_REL_NS);
 
         foreach ($relsMain->Relationship as $relation) {
-            if ((string)$relation['Id'] !== $rid) {
+            $attributes = $relation->attributes();
+            $id = isset($attributes['Id']) ? (string)$attributes['Id'] : '';
+
+            if ($id !== $rid) {
                 continue;
             }
 
-            $target = (string)$relation['Target'];
+            $target = isset($attributes['Target']) ? (string)$attributes['Target'] : '';
 
             if ($target === '') {
                 break;
@@ -195,24 +205,25 @@ class XlsxReader
         throw new RuntimeException('Не найден relationship для первого листа: ' . $rid);
     }
 
-    private function readInlineString(?SimpleXMLElement $node): string
+    private function readInlineString(SimpleXMLElement $cell): string
     {
-        if ($node === null) {
+        $cellMain = $cell->children(self::MAIN_NS);
+
+        if (!isset($cellMain->is)) {
             return '';
         }
 
-        $main = $node->children(self::MAIN_NS);
         $parts = [];
+        $inlineMain = $cellMain->is->children(self::MAIN_NS);
 
-        foreach ($main->t as $text) {
+        foreach ($inlineMain->t as $text) {
             $parts[] = (string)$text;
         }
 
-        foreach ($main->r as $run) {
+        foreach ($inlineMain->r as $run) {
             $runMain = $run->children(self::MAIN_NS);
-
-            foreach ($runMain->t as $text) {
-                $parts[] = (string)$text;
+            if (isset($runMain->t)) {
+                $parts[] = (string)$runMain->t;
             }
         }
 
@@ -221,14 +232,14 @@ class XlsxReader
 
     private function columnIndex(string $cellRef): int
     {
-        if (!preg_match('/^([A-Z]+)/i', $cellRef, $matches)) {
+        if (!preg_match('/^([A-Z]+)/i', $cellRef, $m)) {
             throw new RuntimeException('Некорректная ссылка ячейки: ' . $cellRef);
         }
 
-        $letters = strtoupper($matches[1]);
+        $letters = strtoupper($m[1]);
         $index = 0;
 
-        for ($i = 0, $length = strlen($letters); $i < $length; $i++) {
+        for ($i = 0, $len = strlen($letters); $i < $len; $i++) {
             $index = $index * 26 + (ord($letters[$i]) - 64);
         }
 

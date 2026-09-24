@@ -24,8 +24,8 @@ function diagnostic_section(string $title, callable $callback): void
 
 try {
     $hook = trim((string)$config['BITRIX_HOOK']);
-    if ($hook === '') {
-        throw new RuntimeException('BITRIX_HOOK не задан в Environment Variables Render.');
+    if ($hook === '' || strpos($hook, 'YOUR-DOMAIN') !== false) {
+        throw new RuntimeException('BITRIX_HOOK в config.php не настроен.');
     }
 
     $bx = new BXConnector($hook);
@@ -107,35 +107,12 @@ try {
         return '';
     });
 
-    diagnostic_section('Страны для реквизитов', function () use ($bx): string {
-        $items = $bx->request('crm.requisite.preset.countries');
-        $count = 0;
-        foreach ((array)$items as $item) {
-            echo 'ID=' . ($item['ID'] ?? '')
-                . ' | CODE=' . ($item['CODE'] ?? '')
-                . ' | NAME=' . ($item['NAME'] ?? '')
-                . "\n";
-            $count++;
-            if ($count >= 100) {
-                echo '... показаны первые 100\n';
-                break;
-            }
-        }
-        return '';
-    });
-
-    diagnostic_section('Шаблоны реквизитов', function () use ($bx): string {
-        $items = $bx->getList('crm.requisite.preset.list', [
-            'filter' => ['ENTITY_TYPE_ID' => 8],
-            'select' => ['ID', 'NAME', 'COUNTRY_ID', 'ENTITY_TYPE_ID', 'ACTIVE'],
-        ]);
-        foreach ($items as $item) {
-            echo 'ID=' . ($item['ID'] ?? '')
-                . ' | NAME=' . ($item['NAME'] ?? '')
-                . ' | COUNTRY_ID=' . ($item['COUNTRY_ID'] ?? '')
-                . ' | ACTIVE=' . ($item['ACTIVE'] ?? '')
-                . "\n";
-        }
+    diagnostic_section('Страны и шаблон реквизитов', function () use ($config): string {
+        echo 'Используются заранее проверенные значения, без вызова методов с расширенными правами:' . "\n";
+        echo 'Россия: COUNTRY_ID=' . $config['REQUISITE_COUNTRY_ID']
+            . ' | CODE=' . $config['COUNTRY_CODE']
+            . ' | NAME=' . $config['COUNTRY'] . "\n";
+        echo 'Шаблон реквизита «Организация»: PRESET_ID=' . $config['REQUISITE_PRESET_ID'] . "\n";
         return '';
     });
 

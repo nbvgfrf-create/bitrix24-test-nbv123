@@ -186,64 +186,6 @@ function extract_batch_result(array $response): array
     ];
 }
 
-function find_existing_items_by_origin(
-    BXConnector $bx,
-    array $queue,
-    array $indexes,
-    int $entityTypeId
-): array {
-    $commands = [];
-
-    foreach ($indexes as $index) {
-        $sourceKey = (string)($queue['items'][$index]['source_key'] ?? '');
-
-        if ($sourceKey === '') {
-            continue;
-        }
-
-        $commands[(string)$index] = [
-            'method' => 'crm.item.list',
-            'params' => [
-                'entityTypeId' => $entityTypeId,
-                'select' => ['id', 'title', 'originId', 'originatorId'],
-                'filter' => [
-                    'originatorId' => 'xlsx_import_v2',
-                    'originId' => $sourceKey,
-                ],
-            ],
-        ];
-    }
-
-    if (!$commands) {
-        return [];
-    }
-
-    $response = $bx->batch($commands, false);
-    $parts = extract_batch_result($response);
-    $found = [];
-
-    foreach ($commands as $key => $_command) {
-        if (isset($parts['errors'][$key])) {
-            $error = $parts['errors'][$key];
-            $message = (string)($error['error_description'] ?? $error['error'] ?? 'Не удалось проверить существующий объект.');
-            throw new RuntimeException('Проверка существующего объекта завершилась ошибкой: ' . $message);
-        }
-
-        $result = $parts['ok'][$key] ?? [];
-        $items = is_array($result['items'] ?? null) ? $result['items'] : [];
-
-        foreach ($items as $item) {
-            $id = (int)($item['id'] ?? 0);
-            if ($id > 0) {
-                $found[(int)$key] = $id;
-                break;
-            }
-        }
-    }
-
-    return $found;
-}
-
 function process_create_stage(
     BXConnector $bx,
     array &$queue,
@@ -255,96 +197,51 @@ function process_create_stage(
 ): int {
     $limit = (int)$config['BATCH_SIZE'];
     $indexes = JsonStore::pendingIndexes($queue, $limit);
-
     if (!$indexes) {
         return 0;
     }
 
-    $entityTypeId = $stage === 'contacts' ? 3 : 4;
-    $existing = find_existing_items_by_origin($bx, $queue, $indexes, $entityTypeId);
-    $alreadyDone = 0;
-    $remaining = [];
-
-    foreach ($indexes as $index) {
-        if (!isset($existing[$index])) {
-            $remaining[] = $index;
-            continue;
-        }
-
-        $item =& $queue['items'][$index];
-        $item['bitrix_id'] = (int)$existing[$index];
-        $item['status'] = 'done';
-        $item['last_error'] = null;
-        $item['updated_at'] = date('c');
-        unset($item);
-        $alreadyDone++;
-    }
-
-    if (!$remaining) {
-        worker_out('Найдено уже созданных объектов: ' . $alreadyDone . '.');
-        return $alreadyDone;
-    }
-
-    $commands = create_batch_commands(
-        $remaining,
-        $queue,
-        $stage,
-        $runtime,
-        $distributorMap,
-        $contactMap
-    );
+    $commands = create_batch_commands($indexes, $queue, $stage, $runtime, $distributorMap, $contactMap);
 
     try {
         $apiStarted = microtime(true);
         $response = $bx->batch($commands, false);
         $apiElapsed = round(microtime(true) - $apiStarted, 2);
-        worker_out(
-            'Batch ' . $stage . ': ' . count($remaining) .
-            ' элементов, API ' . $apiElapsed . ' сек.'
-        );
+        worker_out('Batch ' . $stage . ': ' . count($indexes) . ' элементов, API ' . $apiElapsed . ' сек.');
         $parts = extract_batch_result($response);
     } catch (Throwable $e) {
-        foreach ($remaining as $index) {
+        foreach ($indexes as $index) {
             $queue['items'][$index]['status'] = 'pending';
             $queue['items'][$index]['last_error'] = $e->getMessage();
         }
         throw $e;
     }
 
-    foreach ($remaining as $index) {
+    foreach ($indexes as $index) {
         $key = (string)$index;
         $item =& $queue['items'][$index];
 
         if (isset($parts['errors'][$key])) {
             $error = $parts['errors'][$key];
-            $message = (string)(
-                $error['error_description'] ??
-                $error['error'] ??
-                'Неизвестная ошибка batch'
-            );
-
+            $message = (string)($error['error_description'] ?? $error['error'] ?? 'Неизвестная ошибка batch');
             if ((int)$item['attempts'] >= (int)$config['MAX_ATTEMPTS']) {
                 $item['status'] = 'failed';
             } else {
                 $item['status'] = 'pending';
             }
-
             $item['last_error'] = $message;
             unset($item);
             continue;
         }
 
         $result = $parts['ok'][$key] ?? null;
-
         if ($stage === 'contacts') {
-            $id = (int)($result['item']['id'] ?? $result ?? 0);
+            $id = (int)($result['item']['id'] ?? 0);
         } else {
             $id = (int)($item['reuse_distributor_id'] ?? 0);
-
             if ($id <= 0) {
                 $id = (int)($result['item']['id'] ?? $result ?? 0);
             }
-
             unset($item['reuse_distributor_id']);
         }
 
@@ -362,7 +259,7 @@ function process_create_stage(
         unset($item);
     }
 
-    return $alreadyDone + count($remaining);
+    return count($indexes);
 }
 
 function build_distributor_map(array $queue): array
@@ -408,19 +305,16 @@ function address_type_id(array $runtime, string $type): int
 
 function resolve_country_preset(array $runtime, string $country): array
 {
-    $countryKey = normalize_key($country);
-    $countryInfo = $runtime['country_presets']['countries'][$countryKey] ?? null;
-
-    if ($countryInfo) {
-        $countryId = (int)$countryInfo['id'];
-        $presetId = (int)($runtime['country_presets']['preset_by_country_id'][$countryId] ?? 0);
-        if ($presetId > 0) {
-            return ['preset_id' => $presetId, 'country_code' => (string)$countryInfo['code']];
-        }
-        return ['preset_id' => (int)$runtime['country_presets']['fallback_preset_id'], 'country_code' => (string)$countryInfo['code']];
-    }
-
-    return ['preset_id' => (int)$runtime['country_presets']['fallback_preset_id'], 'country_code' => ''];
+    /*
+     * По требованиям текущего импорта реквизиты создаются по российскому
+     * шаблону независимо от значения поля «Страна» в исходном XLSX.
+     * Само значение «Страна» компании при этом сохраняется отдельно.
+     */
+    return [
+        'preset_id' => (int)$runtime['country_presets']['fallback_preset_id'],
+        'country_code' => (string)$runtime['country_presets']['countries'][normalize_key('Россия')]['code'],
+        'country_name' => (string)$runtime['country_presets']['countries'][normalize_key('Россия')]['name'],
+    ];
 }
 
 function ensure_requisites_for_addresses(BXConnector $bx, array &$queue, array $runtime, array $config): int
@@ -469,19 +363,6 @@ function ensure_requisites_for_addresses(BXConnector $bx, array &$queue, array $
 
     foreach ($targets as $index => $companyId) {
         $key = (string)$index;
-
-        if (isset($parts['errors'][$key])) {
-            $error = $parts['errors'][$key];
-            $message = (string)(
-                $error['error_description'] ??
-                $error['error'] ??
-                'Не удалось проверить реквизит.'
-            );
-            throw new RuntimeException(
-                'Ошибка проверки реквизита компании #' . $companyId . ': ' . $message
-            );
-        }
-
         $existing = $parts['ok'][$key] ?? [];
         $found = 0;
         foreach ((array)$existing as $rq) {
@@ -502,8 +383,8 @@ function ensure_requisites_for_addresses(BXConnector $bx, array &$queue, array $
         $commands = [];
         foreach ($missing as $index => $companyId) {
             $item = $queue['items'][$index];
-            $country = clean_value((string)($item['data']['country'] ?? ''));
-            $preset = resolve_country_preset($runtime, $country);
+            $preset = resolve_country_preset($runtime, (string)($item['data']['country'] ?? ''));
+            $country = $preset['country_name'];
             $commands[(string)$index] = [
                 'method' => 'crm.requisite.add',
                 'params' => [
@@ -511,7 +392,7 @@ function ensure_requisites_for_addresses(BXConnector $bx, array &$queue, array $
                         'ENTITY_TYPE_ID' => 4,
                         'ENTITY_ID' => $companyId,
                         'PRESET_ID' => $preset['preset_id'],
-                        'NAME' => $item['data']['name'],
+                        'NAME' => 'Import address ' . $item['data']['name'],
                         'ACTIVE' => 'Y',
                         'ADDRESS_ONLY' => 'Y',
                         'SORT' => 500,
@@ -546,17 +427,12 @@ function process_addresses(BXConnector $bx, array &$queue, array $runtime, array
 {
     ensure_requisites_for_addresses($bx, $queue, $runtime, $config);
 
-    $limit = (int)$config['ADDRESS_BATCH_SIZE'];
-    $candidateCommands = [];
+    $commands = [];
     $refs = [];
-    $meta = [];
+    $limit = (int)$config['ADDRESS_BATCH_SIZE'];
 
     foreach ($queue['items'] as $companyIndex => $item) {
-        if (
-            ($item['status'] ?? '') !== 'done'
-            || empty($item['bitrix_id'])
-            || empty($item['requisite_id'])
-        ) {
+        if (($item['status'] ?? '') !== 'done' || empty($item['bitrix_id']) || empty($item['requisite_id'])) {
             continue;
         }
 
@@ -565,182 +441,57 @@ function process_addresses(BXConnector $bx, array &$queue, array $runtime, array
                 continue;
             }
 
-            $value = clean_value((string)($address['value'] ?? ''));
-            if ($value === '') {
-                $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['status'] = 'done';
-                $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['last_error'] = null;
-                continue;
-            }
-
-            $typeId = address_type_id(
-                $runtime,
-                (string)($address['type'] ?? 'Actual')
-            );
+            $typeId = address_type_id($runtime, (string)($address['type'] ?? 'Actual'));
+            $preset = resolve_country_preset($runtime, (string)($item['data']['country'] ?? ''));
+            $country = $preset['country_name'];
 
             $key = $companyIndex . '_' . $addressIndex;
-
-            $candidateCommands[$key] = [
-                'method' => 'crm.address.list',
+            $commands[$key] = [
+                'method' => 'crm.address.add',
                 'params' => [
-                    'filter' => [
+                    'fields' => [
+                        'TYPE_ID' => $typeId,
                         'ENTITY_TYPE_ID' => 8,
                         'ENTITY_ID' => (int)$item['requisite_id'],
-                        'TYPE_ID' => $typeId,
-                        'ADDRESS_1' => $value,
-                    ],
-                    'select' => [
-                        'TYPE_ID',
-                        'ENTITY_TYPE_ID',
-                        'ENTITY_ID',
-                        'ADDRESS_1',
+                        'ADDRESS_1' => $address['value'],
+                        'COUNTRY' => $country,
+                        'COUNTRY_CODE' => $preset['country_code'],
                     ],
                 ],
             ];
-
             $refs[$key] = [$companyIndex, $addressIndex];
-            $meta[$key] = [
-                'type_id' => $typeId,
-                'value' => $value,
-                'country' => clean_value((string)($item['data']['country'] ?? '')),
-                'requisite_id' => (int)$item['requisite_id'],
-            ];
 
-            if (count($candidateCommands) >= $limit) {
+            if (count($commands) >= $limit) {
                 break 2;
             }
         }
     }
 
-    if (!$candidateCommands) {
-        return 0;
-    }
-
-    // Сначала проверяем адреса. Это защищает от дублей, если Bitrix уже
-    // создал адрес, но ответ не дошёл до worker.
-    $lookupStarted = microtime(true);
-    $lookupResponse = $bx->batch($candidateCommands, false);
-    $lookupElapsed = round(microtime(true) - $lookupStarted, 2);
-    worker_out(
-        'Проверка адресов: ' . count($candidateCommands) .
-        ' шт., API ' . $lookupElapsed . ' сек.'
-    );
-
-    $lookupParts = extract_batch_result($lookupResponse);
-    $commands = [];
-    $addRefs = [];
-    $processed = 0;
-
-    foreach ($candidateCommands as $key => $_command) {
-        [$companyIndex, $addressIndex] = $refs[$key];
-
-        if (isset($lookupParts['errors'][$key])) {
-            $error = $lookupParts['errors'][$key];
-            $message = (string)(
-                $error['error_description'] ??
-                $error['error'] ??
-                'Ошибка проверки адреса'
-            );
-
-            $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['last_error'] = $message;
-            continue;
-        }
-
-        $result = $lookupParts['ok'][$key] ?? [];
-        $existing = is_array($result['result'] ?? null)
-            ? $result['result']
-            : $result;
-
-        if (is_array($existing) && !empty($existing)) {
-            $existingId = (int)($existing[0]['ID'] ?? $existing[0]['id'] ?? 0);
-
-            if ($existingId > 0) {
-                $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['bitrix_id'] = $existingId;
-                $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['status'] = 'done';
-                $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['last_error'] = null;
-                $processed++;
-                continue;
-            }
-        }
-
-        $addRefs[$key] = $refs[$key];
-    }
-
-    foreach ($addRefs as $key => [$companyIndex, $addressIndex]) {
-        $info = $meta[$key];
-        $address =& $queue['items'][$companyIndex]['data']['addresses'][$addressIndex];
-
-        $address['attempts'] = (int)($address['attempts'] ?? 0) + 1;
-
-        $commands[$key] = [
-            'method' => 'crm.address.add',
-            'params' => [
-                'fields' => [
-                    'TYPE_ID' => (int)$info['type_id'],
-                    'ENTITY_TYPE_ID' => 8,
-                    'ENTITY_ID' => (int)$info['requisite_id'],
-                    'ADDRESS_1' => $info['value'],
-                    'COUNTRY' => $info['country'],
-                ],
-            ],
-        ];
-
-        unset($address);
-    }
-
     if (!$commands) {
-        return $processed;
+        return 0;
     }
 
     $apiStarted = microtime(true);
     $response = $bx->batch($commands, false);
     $apiElapsed = round(microtime(true) - $apiStarted, 2);
-    worker_out(
-        'Batch addresses: ' . count($commands) .
-        ' адресов, API ' . $apiElapsed . ' сек.'
-    );
-
+    worker_out('Batch addresses: ' . count($commands) . ' адресов, API ' . $apiElapsed . ' сек.');
     $parts = extract_batch_result($response);
 
-    foreach ($addRefs as $key => [$companyIndex, $addressIndex]) {
-        $address =& $queue['items'][$companyIndex]['data']['addresses'][$addressIndex];
-
+    foreach ($refs as $key => [$companyIndex, $addressIndex]) {
         if (isset($parts['errors'][$key])) {
-            $error = $parts['errors'][$key];
-            $message = (string)(
-                $error['error_description'] ??
-                $error['error'] ??
-                'Ошибка адреса'
-            );
-
-            $address['last_error'] = $message;
-
-            if ((int)$address['attempts'] >= (int)$config['MAX_ATTEMPTS']) {
-                $address['status'] = 'failed';
-            }
-
-            unset($address);
+            $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['last_error'] = (string)($parts['errors'][$key]['error_description'] ?? $parts['errors'][$key]['error'] ?? 'Ошибка адреса');
             continue;
         }
 
         $id = (int)($parts['ok'][$key] ?? 0);
-
         if ($id > 0) {
-            $address['bitrix_id'] = $id;
-            $address['status'] = 'done';
-            $address['last_error'] = null;
-            $processed++;
-        } else {
-            $address['last_error'] = 'Bitrix не вернул ID адреса.';
-
-            if ((int)$address['attempts'] >= (int)$config['MAX_ATTEMPTS']) {
-                $address['status'] = 'failed';
-            }
+            $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['bitrix_id'] = $id;
+            $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['status'] = 'done';
+            $queue['items'][$companyIndex]['data']['addresses'][$addressIndex]['last_error'] = null;
         }
-
-        unset($address);
     }
 
-    return $processed;
+    return count($refs);
 }
 
 function has_pending_addresses(array $queue): bool
@@ -762,8 +513,8 @@ try {
 
     $runtime = load_runtime($config['RUNTIME_FILE']);
     $hook = trim((string)$config['BITRIX_HOOK']);
-    if ($hook === '') {
-        throw new RuntimeException('BITRIX_HOOK не задан в Environment Variables Render.');
+    if ($hook === '' || strpos($hook, 'YOUR-DOMAIN') !== false) {
+        throw new RuntimeException('Укажи настоящий BITRIX_HOOK в config.php.');
     }
 
     $lockHandle = fopen($config['RUN_LOCK'], 'c');

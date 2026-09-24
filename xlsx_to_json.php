@@ -35,8 +35,8 @@ try {
     ensure_dir($config['LOCKS_DIR']);
 
     $hook = trim((string)$config['BITRIX_HOOK']);
-    if ($hook === '') {
-        throw new RuntimeException('BITRIX_HOOK не задан в Environment Variables Render.');
+    if ($hook === '' || strpos($hook, 'YOUR-DOMAIN') !== false) {
+        throw new RuntimeException('Сначала укажи настоящий BITRIX_HOOK в config.php.');
     }
 
     $bx = new BXConnector($hook);

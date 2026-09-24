@@ -3,21 +3,26 @@
 declare(strict_types=1);
 
 return [
-    // На Render используется уже заданная Environment Variable BITRIX_HOOK.
-    // Секрет вебхука намеренно не хранится в Git-репозитории.
+    // На Render лучше задать BITRIX_HOOK в Environment Variables.
+    // Для локального запуска можно оставить реальный URL в файле.
     'BITRIX_HOOK' => getenv('BITRIX_HOOK') ?: '',
-
     'XLSX_FILE' => __DIR__ . '/companies (5).xlsx',
 
     'RESPONSIBLE_FIRST_NAME' => 'Тимофей',
     'RESPONSIBLE_LAST_NAME' => 'Жмаев',
+    'COUNTRY' => 'Россия',
+    'COUNTRY_CODE' => 'RU',
+    'REQUISITE_COUNTRY_ID' => 1,
+    'REQUISITE_PRESET_ID' => 1,
 
+    // После diagnostic.php здесь должны стоять реальные FIELD_NAME.
     'FIELDS' => [
-        'country' => 'UF_CRM_COUNTRY_IMPORT',
-        'old_responsible' => 'UF_CRM_OLD_RESPONSIBLE',
-        'distributor' => 'UF_CRM_DISTRIBUTOR',
-        'competitor_software' => 'UF_CRM_COMPETITOR_SOFTWARE',
+        'country' => 'UF_CRM_IMPORT_COUNTRY',
+        'old_responsible' => 'UF_CRM_IMPORT_OLD_RESPONSIBLE',
+        'distributor' => 'UF_CRM_IMPORT_DISTRIBUTOR',
+        'competitor_software' => 'UF_CRM_IMPORT_COMPETITOR_SOFTWARE',
         'license_expiration' => 'UF_CRM_LICENSE_EXPIRATION_DATE',
+        'address' => 'UF_CRM_1789561483323',
     ],
 
     'WORKER_BUDGET_SECONDS' => 70,
