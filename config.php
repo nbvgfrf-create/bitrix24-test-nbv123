@@ -12,7 +12,7 @@ return [
     | BITRIX_HOOK
     |
     */
-    'BITRIX_HOOK' => getenv('BITRIX_HOOK') ?: '',
+    'BITRIX_HOOK' => getenv('BITRIX_WEBHOOK') ?: '',
 
     /*
     |--------------------------------------------------------------------------
