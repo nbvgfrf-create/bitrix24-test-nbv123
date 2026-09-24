@@ -64,7 +64,13 @@ function bx_require_status_values(array $map, array $names, string $kind): array
 function bx_load_company_userfields(BXConnector $bx): array
 {
     $items = $bx->getList('crm.company.userfield.list', [
-        'select' => ['ID', 'FIELD_NAME', 'USER_TYPE_ID', 'MULTIPLE', 'LIST'],
+        'select' => [
+            'ID',
+            'FIELD_NAME',
+            'USER_TYPE_ID',
+            'MULTIPLE',
+            'LIST',
+        ],
     ]);
 
     $result = [];
@@ -77,12 +83,39 @@ function bx_load_company_userfields(BXConnector $bx): array
     return $result;
 }
 
+function bx_field_description(array $field): string
+{
+    $parts = [];
+    foreach (['ID', 'FIELD_NAME', 'USER_TYPE_ID', 'MULTIPLE'] as $key) {
+        if (array_key_exists($key, $field)) {
+            $parts[] = $key . '=' . (is_scalar($field[$key]) ? (string)$field[$key] : json_encode($field[$key], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+    }
+    if (!empty($field['EDIT_FORM_LABEL'])) {
+        $parts[] = 'EDIT_FORM_LABEL=' . (is_scalar($field['EDIT_FORM_LABEL']) ? (string)$field['EDIT_FORM_LABEL'] : json_encode($field['EDIT_FORM_LABEL'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+    return implode(', ', $parts);
+}
+
 function bx_validate_fields(array $allFields, array $wantedFields): array
 {
     $result = [];
     foreach ($wantedFields as $key => $fieldName) {
         if (!isset($allFields[$fieldName])) {
-            throw new RuntimeException('Не найдено пользовательское поле компании ' . $fieldName . ' (' . $key . ').');
+            $available = [];
+            foreach ($allFields as $availableName => $field) {
+                $available[] = bx_field_description($field);
+            }
+            sort($available, SORT_NATURAL | SORT_FLAG_CASE);
+
+            $message = "Не найдено пользовательское поле компании {$fieldName} ({$key}).";
+            if ($available) {
+                $message .= "\n\nПоля, которые реально вернул Bitrix24:\n- " . implode("\n- ", $available);
+            } else {
+                $message .= "\n\nBitrix24 не вернул ни одного пользовательского поля компании.";
+            }
+            $message .= "\n\nОткрой /diagnostic.php и пришли его вывод — по нему подберём правильные коды.";
+            throw new RuntimeException($message);
         }
         $result[$key] = $allFields[$fieldName];
     }

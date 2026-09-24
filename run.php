@@ -19,6 +19,7 @@ if (isset($_GET['run'])) {
 </head>
 <body>
     <h1>Bitrix import v2</h1>
+    <p><a href="diagnostic.php" target="_blank">Диагностика Bitrix24</a> | <a href="check.php" target="_blank">Проверка импорта</a> | <a href="xlsx_to_json.php" target="_blank">Подготовить импорт</a></p>
     <div id="log">Запуск...</div>
 <script>
 const log = document.getElementById('log');

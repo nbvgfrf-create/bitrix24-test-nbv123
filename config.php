@@ -3,13 +3,15 @@
 declare(strict_types=1);
 
 return [
-    'BITRIX_HOOK' => 'https://b24-ef9noe.bitrix24.ru/rest/1/55yppqh1b90kq575/',
+    // На Render лучше задать BITRIX_HOOK в Environment Variables.
+    // Для локального запуска можно оставить реальный URL в файле.
+    'BITRIX_HOOK' => getenv('BITRIX_HOOK') ?: 'https://b24-ef9noe.bitrix24.ru/rest/1/55yppqh1b90kq575/',
     'XLSX_FILE' => __DIR__ . '/companies (5).xlsx',
 
     'RESPONSIBLE_FIRST_NAME' => 'Тимофей',
     'RESPONSIBLE_LAST_NAME' => 'Жмаев',
 
-    // ВАЖНО: это именно названия уже существующих пользовательских полей компаний.
+    // После diagnostic.php здесь должны стоять реальные FIELD_NAME.
     'FIELDS' => [
         'country' => 'UF_CRM_IMPORT_COUNTRY',
         'old_responsible' => 'UF_CRM_IMPORT_OLD_RESPONSIBLE',
@@ -18,7 +20,6 @@ return [
         'license_expiration' => 'UF_CRM_IMPORT_LICENSE_EXPIRATION',
     ],
 
-    // Параметры worker.
     'WORKER_BUDGET_SECONDS' => 70,
     'BATCH_SIZE' => 5,
     'ADDRESS_BATCH_SIZE' => 20,

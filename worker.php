@@ -610,7 +610,9 @@ try {
         flock($lockHandle, LOCK_UN);
         fclose($lockHandle);
     }
-    http_response_code(500);
+    if (!headers_sent()) {
+        http_response_code(500);
+    }
     worker_out('ОШИБКА WORKER: ' . $e->getMessage());
     exit(1);
 }

@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 $config = require __DIR__ . '/config.php';
+header('Content-Type: text/plain; charset=utf-8');
 require_once __DIR__ . '/BXConnector.php';
 require_once __DIR__ . '/XlsxReader.php';
 require_once __DIR__ . '/JsonStore.php';
@@ -273,7 +274,9 @@ try {
     out_line('Уникальных контактов: ' . count($contactItems));
     out_line('Компаний с адресами: ' . count(array_filter($companies, static fn(array $c): bool => !empty($c['addresses']))));
 } catch (Throwable $e) {
-    http_response_code(500);
+    if (!headers_sent()) {
+        http_response_code(500);
+    }
     out_line('ОШИБКА: ' . $e->getMessage());
     exit(1);
 }
