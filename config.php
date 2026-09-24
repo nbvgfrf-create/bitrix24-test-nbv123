@@ -74,8 +74,8 @@ return [
     'REQUISITE_PRESET_ID' => 1,
 
     // Один worker держим недолго, затем браузер запускает следующий цикл.
-    'WORKER_SECONDS' => 50,
-    'BATCH_SIZE' => 50,
+    'WORKER_SECONDS' => 45,
+    'BATCH_SIZE' => 20,
     'REQUEST_INTERVAL' => 0.10,
     'HTTP_CONNECT_TIMEOUT' => 5,
     'HTTP_TIMEOUT' => 60,

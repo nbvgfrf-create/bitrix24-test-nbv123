@@ -45,28 +45,18 @@ class Bitrix
         if (!is_array($data)) {
             throw new RuntimeException('Bitrix вернул не JSON: HTTP ' . $httpCode);
         }
+
         if (isset($data['error'])) {
-            throw new RuntimeException((string)($data['error_description'] ?? $data['error']));
+            throw new RuntimeException(
+                (string)($data['error_description'] ?? $data['error'])
+                . ' [' . (string)$data['error'] . ']'
+            );
+        }
+
+        if ($httpCode >= 400) {
+            throw new RuntimeException('Bitrix HTTP ' . $httpCode);
         }
 
         return $data['result'] ?? null;
-    }
-
-    public function batch(array $commands): array
-    {
-        if (!$commands) {
-            return ['result' => ['result' => [], 'result_error' => []]];
-        }
-        if (count($commands) > 50) {
-            throw new RuntimeException('В batch можно передать не больше 50 команд.');
-        }
-
-        $cmd = [];
-        foreach ($commands as $key => $command) {
-            $query = http_build_query($command['params'] ?? [], '', '&', PHP_QUERY_RFC3986);
-            $cmd[(string)$key] = $command['method'] . ($query !== '' ? '?' . $query : '');
-        }
-
-        return $this->call('batch', ['halt' => 0, 'cmd' => $cmd]) ?? [];
     }
 }
