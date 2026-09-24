@@ -198,7 +198,13 @@ function build_map(array $queue, string $field): array
     foreach ($queue['items'] as $item) {
         if (($item['status'] ?? '') !== 'done' || empty($item['bitrix_id'])) continue;
         $value = $item['data'][$field] ?? $item['data']['name'] ?? '';
-        if (clean((string)$value) !== '') $map[key_name((string)$value)] = (int)$item['bitrix_id'];
+        if (clean((string)$value) === '') continue;
+
+        $map[key_name((string)$value)] = (int)$item['bitrix_id'];
+
+        if ($field === 'name' && str_starts_with((string)$item['source_key'], 'contact:')) {
+            $map['contact:' . sha1(key_name((string)$value))] = (int)$item['bitrix_id'];
+        }
     }
     return $map;
 }
