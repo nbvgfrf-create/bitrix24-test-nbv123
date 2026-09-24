@@ -1,4 +1,3 @@
-
 <?php
 
 declare(strict_types=1);
@@ -12,66 +11,48 @@ class XlsxReader
     public function read(string $path): array
     {
         if (!class_exists('ZipArchive')) {
-            throw new RuntimeException(
-                'PHP extension zip не установлена (нужен ZipArchive).'
-            );
+            throw new RuntimeException('PHP extension zip не установлена (нужен ZipArchive).');
         }
 
         if (!class_exists('SimpleXMLElement')) {
-            throw new RuntimeException(
-                'PHP extension simplexml не установлена.'
-            );
+            throw new RuntimeException('PHP extension simplexml не установлена.');
         }
 
         if (!is_file($path)) {
-            throw new RuntimeException(
-                'Файл XLSX не найден: ' . $path
-            );
+            throw new RuntimeException('Не найден XLSX: ' . $path);
         }
 
         $zip = new ZipArchive();
 
         if ($zip->open($path) !== true) {
-            throw new RuntimeException(
-                'Не удалось открыть XLSX: ' . $path
-            );
+            throw new RuntimeException('Не удалось открыть XLSX: ' . $path);
         }
 
         try {
             $sharedStrings = $this->loadSharedStrings($zip);
-
             $sheetPath = $this->findFirstSheet($zip);
-
             $sheetXml = $zip->getFromName($sheetPath);
 
             if ($sheetXml === false) {
-                throw new RuntimeException(
-                    'Не найден XML первого листа: ' . $sheetPath
-                );
+                throw new RuntimeException('Не найден XML первого листа: ' . $sheetPath);
             }
 
             $xml = simplexml_load_string($sheetXml);
 
             if ($xml === false) {
-                throw new RuntimeException(
-                    'Не удалось разобрать XML листа XLSX.'
-                );
+                throw new RuntimeException('Не удалось разобрать XML листа XLSX.');
             }
 
-            $this->registerMainNamespace($xml);
+            $main = $xml->children(self::MAIN_NS);
+            $sheetData = $main->sheetData;
 
             $rows = [];
 
-            $rowNodes = $xml->xpath('//m:sheetData/m:row');
-
-            if ($rowNodes === false) {
-                $rowNodes = [];
-            }
-
-            foreach ($rowNodes as $rowNode) {
+            foreach ($sheetData->row as $rowNode) {
+                $rowMain = $rowNode->children(self::MAIN_NS);
                 $cells = [];
 
-                foreach ($rowNode->c as $cell) {
+                foreach ($rowMain->c as $cell) {
                     $ref = (string)$cell['r'];
 
                     if ($ref === '') {
@@ -79,31 +60,23 @@ class XlsxReader
                     }
 
                     $index = $this->columnIndex($ref);
-
                     $type = (string)$cell['t'];
-
+                    $cellMain = $cell->children(self::MAIN_NS);
                     $value = '';
 
                     if ($type === 's') {
-                        $raw = isset($cell->v)
-                            ? (string)$cell->v
-                            : '';
+                        $raw = isset($cellMain->v) ? (string)$cellMain->v : '';
 
                         if ($raw !== '') {
                             $value = $sharedStrings[(int)$raw] ?? '';
                         }
                     } elseif ($type === 'inlineStr') {
-                        $value = $this->readInlineString($cell);
+                        $value = $this->readInlineString($cellMain->is ?? null);
                     } elseif ($type === 'b') {
-                        $raw = isset($cell->v)
-                            ? (string)$cell->v
-                            : '';
-
+                        $raw = isset($cellMain->v) ? (string)$cellMain->v : '';
                         $value = ($raw === '1');
                     } else {
-                        $value = isset($cell->v)
-                            ? (string)$cell->v
-                            : '';
+                        $value = isset($cellMain->v) ? (string)$cellMain->v : '';
                     }
 
                     $cells[$index] = $value;
@@ -114,7 +87,6 @@ class XlsxReader
                 }
 
                 $max = max(array_keys($cells));
-
                 $row = [];
 
                 for ($i = 0; $i <= $max; $i++) {
@@ -144,27 +116,23 @@ class XlsxReader
             return [];
         }
 
-        $this->registerMainNamespace($xml);
-
+        $main = $xml->children(self::MAIN_NS);
         $result = [];
 
-        $items = $xml->xpath('//m:si');
-
-        if ($items === false) {
-            return [];
-        }
-
-        foreach ($items as $item) {
-            $texts = $item->xpath('.//m:t');
-
-            if ($texts === false) {
-                $texts = [];
-            }
-
+        foreach ($main->si as $item) {
+            $itemMain = $item->children(self::MAIN_NS);
             $parts = [];
 
-            foreach ($texts as $text) {
+            foreach ($itemMain->t as $text) {
                 $parts[] = (string)$text;
+            }
+
+            foreach ($itemMain->r as $run) {
+                $runMain = $run->children(self::MAIN_NS);
+
+                foreach ($runMain->t as $text) {
+                    $parts[] = (string)$text;
+                }
             }
 
             $result[] = implode('', $parts);
@@ -179,54 +147,34 @@ class XlsxReader
         $relsText = $zip->getFromName('xl/_rels/workbook.xml.rels');
 
         if ($workbookText === false || $relsText === false) {
-            throw new RuntimeException(
-                'Некорректный XLSX: отсутствуют workbook.xml или rels.'
-            );
+            throw new RuntimeException('Некорректный XLSX: отсутствуют workbook.xml или rels.');
         }
 
         $workbook = simplexml_load_string($workbookText);
         $rels = simplexml_load_string($relsText);
 
         if ($workbook === false || $rels === false) {
-            throw new RuntimeException(
-                'Не удалось разобрать workbook XML.'
-            );
+            throw new RuntimeException('Не удалось разобрать workbook XML.');
         }
 
-        $this->registerMainNamespace($workbook);
-        $this->registerRelationshipNamespace($workbook);
+        $main = $workbook->children(self::MAIN_NS);
+        $sheets = $main->sheets;
 
-        $sheets = $workbook->xpath('//m:sheets/m:sheet');
-
-        if ($sheets === false || !$sheets) {
-            throw new RuntimeException(
-                'В XLSX нет листов.'
-            );
+        if (!isset($sheets->sheet) || count($sheets->sheet) === 0) {
+            throw new RuntimeException('В XLSX нет листов.');
         }
 
-        $first = $sheets[0];
-
+        $first = $sheets->sheet[0];
         $attributes = $first->attributes(self::REL_NS);
-
-        $rid = $attributes !== null
-            ? (string)$attributes['id']
-            : '';
+        $rid = $attributes !== null ? (string)$attributes['id'] : '';
 
         if ($rid === '') {
-            throw new RuntimeException(
-                'У первого листа XLSX отсутствует r:id.'
-            );
+            throw new RuntimeException('У первого листа XLSX отсутствует r:id.');
         }
 
-        $this->registerPackageRelationshipNamespace($rels);
+        $relsMain = $rels->children(self::PACKAGE_REL_NS);
 
-        $relationNodes = $rels->xpath('//p:Relationship');
-
-        if ($relationNodes === false) {
-            $relationNodes = [];
-        }
-
-        foreach ($relationNodes as $relation) {
+        foreach ($relsMain->Relationship as $relation) {
             if ((string)$relation['Id'] !== $rid) {
                 continue;
             }
@@ -244,44 +192,28 @@ class XlsxReader
             return 'xl/' . ltrim($target, '/');
         }
 
-        throw new RuntimeException(
-            'Не найден relationship для первого листа: ' . $rid
-        );
+        throw new RuntimeException('Не найден relationship для первого листа: ' . $rid);
     }
 
-    private function registerMainNamespace(SimpleXMLElement $xml): void
+    private function readInlineString(?SimpleXMLElement $node): string
     {
-        $xml->registerXPathNamespace('m', self::MAIN_NS);
-    }
-
-    private function registerRelationshipNamespace(SimpleXMLElement $xml): void
-    {
-        $xml->registerXPathNamespace('r', self::REL_NS);
-    }
-
-    private function registerPackageRelationshipNamespace(SimpleXMLElement $xml): void
-    {
-        $xml->registerXPathNamespace('p', self::PACKAGE_REL_NS);
-    }
-
-    private function readInlineString(SimpleXMLElement $cell): string
-    {
-        if (!isset($cell->is)) {
+        if ($node === null) {
             return '';
         }
 
-        $this->registerMainNamespace($cell);
-
-        $texts = $cell->xpath('.//m:t');
-
-        if ($texts === false || !$texts) {
-            return '';
-        }
-
+        $main = $node->children(self::MAIN_NS);
         $parts = [];
 
-        foreach ($texts as $text) {
+        foreach ($main->t as $text) {
             $parts[] = (string)$text;
+        }
+
+        foreach ($main->r as $run) {
+            $runMain = $run->children(self::MAIN_NS);
+
+            foreach ($runMain->t as $text) {
+                $parts[] = (string)$text;
+            }
         }
 
         return implode('', $parts);
@@ -289,26 +221,17 @@ class XlsxReader
 
     private function columnIndex(string $cellRef): int
     {
-        if (!preg_match('/^([A-Z]+)/i', $cellRef, $m)) {
-            throw new RuntimeException(
-                'Некорректная ссылка ячейки: ' . $cellRef
-            );
+        if (!preg_match('/^([A-Z]+)/i', $cellRef, $matches)) {
+            throw new RuntimeException('Некорректная ссылка ячейки: ' . $cellRef);
         }
 
-        $letters = strtoupper($m[1]);
-
+        $letters = strtoupper($matches[1]);
         $index = 0;
 
-        for (
-            $i = 0,
-            $len = strlen($letters);
-            $i < $len;
-            $i++
-        ) {
+        for ($i = 0, $length = strlen($letters); $i < $length; $i++) {
             $index = $index * 26 + (ord($letters[$i]) - 64);
         }
 
         return $index - 1;
     }
 }
-

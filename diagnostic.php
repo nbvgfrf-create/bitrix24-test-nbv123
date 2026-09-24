@@ -24,8 +24,8 @@ function diagnostic_section(string $title, callable $callback): void
 
 try {
     $hook = trim((string)$config['BITRIX_HOOK']);
-    if ($hook === '' || strpos($hook, 'YOUR-DOMAIN') !== false) {
-        throw new RuntimeException('BITRIX_HOOK в config.php не настроен.');
+    if ($hook === '') {
+        throw new RuntimeException('BITRIX_HOOK не задан в Environment Variables Render.');
     }
 
     $bx = new BXConnector($hook);
