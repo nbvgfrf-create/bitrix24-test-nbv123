@@ -205,72 +205,106 @@ function bx_load_address_types(BXConnector $bx): array
 
 function build_runtime(BXConnector $bx, array $config): array
 {
-    $responsibleId = bx_find_responsible(
-        $bx,
-        $config['RESPONSIBLE_FIRST_NAME'],
-        $config['RESPONSIBLE_LAST_NAME']
-    );
+    /*
+     * Все значения ниже были получены и проверены через diagnostic.php
+     * в этом же Bitrix24. Поэтому на этапе подготовки очередей мы НЕ
+     * делаем дополнительные REST-запросы на чтение настроек CRM.
+     *
+     * Это важно для входящего вебхука: Bitrix24 ограничивает отдельные
+     * методы чтения конфигурации дополнительными правами, хотя сами
+     * CRM-операции импорта могут быть разрешены.
+     */
 
-    $typeMap = bx_require_status_values(
-        bx_load_status_map($bx, 'COMPANY_TYPE'),
-        [
-            'Prospect',
-            'Customer',
-            'Possible partner',
-            "Competitor's customer",
-            'Distributor',
-            'Partner',
-            'Competitor',
-            'Our company',
-        ],
-        'Тип компании'
-    );
+    $responsibleId = 1;
 
-    $industryNames = [
-        'Hot Forging',
-        'Research and Education',
-        'Extrusion',
-        'Cold Forming',
-        'Forging',
-        'Rolling',
-        'Ring Rolling',
-        'Consulting',
-        'Open Die Forging',
-        'Equipment',
-        'Stamping',
-        'Rotary Swaging',
-        'Flow Forming',
-        'Software development',
-        'Cross rolling',
-        'Wheel Rolling',
-        'Association',
+    $typeMap = [
+        'Prospect' => 'PROSPECT',
+        'Customer' => 'CUSTOMER_2',
+        'Possible partner' => 'POSSIBLE_PARTNER',
+        "Competitor's customer" => 'COMPETITOR_S_CUSTOMER',
+        'Distributor' => 'DISTRIBUTOR',
+        'Partner' => 'PARTNER_2',
+        'Competitor' => 'COMPETITOR_2',
+        'Our company' => 'OUR_COMPANY',
     ];
 
-    $industryMap = bx_require_status_values(
-        bx_load_status_map($bx, 'INDUSTRY'),
-        $industryNames,
-        'Отрасль'
-    );
+    $industryMap = [
+        'Hot Forging' => 'HOT_FORGING',
+        'Research and Education' => 'RESEARCH_AND_EDUCATION',
+        'Extrusion' => 'EXTRUSION',
+        'Cold Forming' => 'COLD_FORMING',
+        'Forging' => 'FORGING',
+        'Rolling' => 'ROLLING',
+        'Ring Rolling' => 'RING_ROLLING',
+        'Consulting' => 'CONSULTING_2',
+        'Open Die Forging' => 'OPEN_DIE_FORGING',
+        'Equipment' => 'EQUIPMENT',
+        'Stamping' => 'STAMPING',
+        'Rotary Swaging' => 'ROTARY_SWAGING',
+        'Flow Forming' => 'FLOW_FORMING',
+        'Software development' => 'SOFTWARE_DEVELOPMENT',
+        'Cross rolling' => 'CROSS_ROLLING',
+        'Wheel Rolling' => 'WHEEL_ROLLING',
+        'Association' => 'ASSOCIATION',
+    ];
 
-    $allFields = bx_load_company_userfields($bx);
-    $fields = bx_validate_fields($allFields, $config['FIELDS']);
-    $competitorOptionMap = bx_load_competitor_options($fields['competitor_software']);
-    $addressTypes = bx_load_address_types($bx);
+    $fields = [
+        'country' => [
+            'FIELD_NAME' => 'UF_CRM_COUNTRY_IMPORT',
+            'USER_TYPE_ID' => 'string',
+            'MULTIPLE' => 'N',
+        ],
+        'old_responsible' => [
+            'FIELD_NAME' => 'UF_CRM_OLD_RESPONSIBLE',
+            'USER_TYPE_ID' => 'string',
+            'MULTIPLE' => 'N',
+        ],
+        'distributor' => [
+            'FIELD_NAME' => 'UF_CRM_DISTRIBUTOR',
+            'USER_TYPE_ID' => 'crm',
+            'MULTIPLE' => 'Y',
+        ],
+        'competitor_software' => [
+            'FIELD_NAME' => 'UF_CRM_COMPETITOR_SOFTWARE',
+            'USER_TYPE_ID' => 'enumeration',
+            'MULTIPLE' => 'Y',
+        ],
+        'license_expiration' => [
+            'FIELD_NAME' => 'UF_CRM_LICENSE_EXPIRATION_DATE',
+            'USER_TYPE_ID' => 'date',
+            'MULTIPLE' => 'N',
+        ],
+        'address' => [
+            'FIELD_NAME' => 'UF_CRM_1789561483323',
+            'USER_TYPE_ID' => 'address',
+            'MULTIPLE' => 'N',
+        ],
+    ];
 
-    /*
-     * Не вызываем crm.requisite.preset.countries и
-     * crm.requisite.preset.list во время подготовки runtime.
-     * Bitrix24 ограничивает эти методы более узкими правами, чем
-     * обычные CRM-операции вебхука.
-     *
-     * По уже проверенной диагностике:
-     * Россия = COUNTRY_ID 1, код RU,
-     * шаблон реквизита «Организация» = PRESET_ID 1.
-     */
+    $competitorOptionMap = [
+        'Simufact' => '94',
+        'Deform' => '96',
+        'Forge' => '98',
+        'HyperXtrude' => '100',
+        'Hyper Extrude' => '102',
+    ];
+
+    $addressTypes = [
+        'Actual' => 1,
+        'Legal' => 6,
+        'Shipping' => 11,
+    ];
+
     $countryPresets = [
         'countries' => [
             normalize_key($config['COUNTRY']) => [
                 'id' => (int)$config['REQUISITE_COUNTRY_ID'],
+                'code' => (string)$config['COUNTRY_CODE'],
+                'name' => (string)$config['COUNTRY'],
+            ],
+        ],
+        'country_by_id' => [
+            (int)$config['REQUISITE_COUNTRY_ID'] => [
                 'code' => (string)$config['COUNTRY_CODE'],
                 'name' => (string)$config['COUNTRY'],
             ],
