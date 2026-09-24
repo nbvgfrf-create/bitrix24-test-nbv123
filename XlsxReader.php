@@ -1,4 +1,4 @@
-```php
+
 <?php
 
 declare(strict_types=1);
@@ -311,4 +311,4 @@ class XlsxReader
         return $index - 1;
     }
 }
-```
+
