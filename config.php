@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 return [
-    'BITRIX_HOOK' => 'https://YOUR-DOMAIN.bitrix24.ru/rest/USER_ID/WEBHOOK_KEY/',
+    'BITRIX_HOOK' => 'https://b24-ef9noe.bitrix24.ru/rest/1/55yppqh1b90kq575/',
     'XLSX_FILE' => __DIR__ . '/companies (5).xlsx',
 
     'RESPONSIBLE_FIRST_NAME' => 'Тимофей',
