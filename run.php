@@ -5,6 +5,11 @@ declare(strict_types=1);
 $config = require __DIR__ . '/config.php';
 require_once __DIR__ . '/helpers.php';
 
+if (isset($_GET['repair'])) {
+    require __DIR__ . '/repair.php';
+    exit;
+}
+
 if (isset($_GET['work'])) {
     require __DIR__ . '/worker.php';
     exit;
@@ -31,6 +36,7 @@ body{font-family:Arial,sans-serif;max-width:900px;margin:30px auto;padding:0 20p
 <div class="note">Сначала подготовь XLSX, затем запусти импорт. Страница сама повторяет worker, пока импорт не закончится.</div>
 <button onclick="prepare()">1. Подготовить</button>
 <button onclick="start()">2. Запустить импорт</button>
+<button onclick="repair()">3. Исправить уже созданные компании</button>
 <pre id="log">Готово к запуску.</pre>
 <script>
 const log = document.getElementById('log');
@@ -39,6 +45,20 @@ function add(text){log.textContent += '\n' + text;}
 async function prepare(){
   const r = await fetch('run.php?prepare=1&_='+Date.now());
   log.textContent = await r.text();
+}
+async function repair(){
+  if(running) return;
+  running = true;
+  async function tick(){
+    try{
+      const r = await fetch('run.php?repair=1&_='+Date.now(), {cache:'no-store'});
+      const text = await r.text();
+      add('\n' + new Date().toLocaleString('ru-RU') + '\n' + text);
+      if(!r.ok || text.includes('ОШИБКА:') || text.includes('ГОТОВО: исправление компаний завершено.')){running=false; return;}
+    }catch(e){add('Ошибка: '+e);}
+    setTimeout(tick, 1000);
+  }
+  tick();
 }
 async function start(){
   if(running) return;

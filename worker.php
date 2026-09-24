@@ -14,7 +14,12 @@ function out(string $text): void
 function map_value(array $map, string $value): string
 {
     $key = key_name($value);
-    return (string)($map[$key] ?? '');
+    foreach ($map as $name => $id) {
+        if (key_name((string)$name) === $key) {
+            return (string)$id;
+        }
+    }
+    return '';
 }
 
 function company_fields(array $config, array $data, array $distributorMap, array $contactMap, bool $withLinks): array
@@ -40,7 +45,7 @@ function company_fields(array $config, array $data, array $distributorMap, array
     foreach (($data['competitor_software'] ?? []) as $name) {
         $id = map_value($config['COMPETITOR_OPTIONS'], (string)$name);
         if ($id !== '') {
-            $software[] = (int)$id;
+            $software[] = (string)$id;
         }
     }
     if ($software) {
@@ -54,9 +59,10 @@ function company_fields(array $config, array $data, array $distributorMap, array
     $distributors = [];
     foreach (($data['distributors'] ?? []) as $name) {
         $id = $distributorMap[key_name((string)$name)] ?? 0;
-        if ($id) {
-            $distributors[] = 'CO_' . (int)$id;
+        if (!$id) {
+            throw new RuntimeException('Не найден ID дистрибьютора: ' . $name);
         }
+        $distributors[] = 'CO_' . (int)$id;
     }
     if ($distributors) {
         $fields[$config['FIELDS']['distributor']] = array_values(array_unique($distributors));

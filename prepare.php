@@ -75,7 +75,7 @@ try {
         $industry = $get('Отрасль');
         $country = $get('Страна');
         $responsible = $get('Ответственный');
-        $distributor = $get('Дистрибьютор');
+        $distributor = $get('Дистрибьютор'); // одна ячейка = одно точное имя дистрибьютора
         $contact = $get('Основной контакт');
         $address = $get('Address');
         $addressType = $get('Address type');
